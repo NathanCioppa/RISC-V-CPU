@@ -5,17 +5,21 @@ parameter REG_COUNT=32,
 input clk,
 input [$clog(REG_COUNT)-1:0] writeback_reg,
 input [XLEN-1:0] x_writeback_data,
-input pc_writeback_data,
+input [XLEN-1:0] pc_writeback_data,
 output reg [XLEN-1:0] x [REG_COUNT-1:0],
-output reg [XLEN-1:0] pc
+output reg [XLEN-1:0] pc,
+output reg [$clog(REG_COUNT)-1:0] last_writeback,
 )
 
-assign x[0] = 0;
+initial x[0] = 0;
 
 always @(posedge clk) begin
 	pc <= pc_writeback_data;
-	if(writeback_reg) // since x0 is hardwired to 0
+	if(writeback_reg) begin // since x0 is hardwired to 0
 		x[writeback_reg] <= x_writeback_data;
+	end
+	last_writeback <= writeback_reg;
+
 end
 
 endmodule
