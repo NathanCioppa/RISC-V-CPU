@@ -17,11 +17,6 @@ module decoder #(
 	output reg [$clog(ALU_CODES_COUNT)-1:0] alu_op,
 );
 
-localparam R_TYPE = 7'b0110011
-localparam I_TYPE = 7'b0010011
-localparam S_TYPE = 7'b0100011
-localparam U_TYPE = 7'b0x10111
-
 reg [XLEN-1:0] x [XREG_COUNT-1:0]; // CPU Registers, the RISC-V x-registers
 reg [XREG_COUNT-1:0] mem_holds;
 reg blocking;
@@ -30,7 +25,8 @@ wire opcode [6:0];
 wire [$clog(XREG_COUNT)-1:0] rd, rs1, rs2;
 wire [XLEN-1:0] rs1_data, rs2_data;
 wire hazard, hazard_rs1, hazard_rs2, hazard_rd;
-wire [XLEN-1:0] imm;
+wire R_hazard, I_hazard, S_hazard, U_hazard;
+wire [XLEN-1:0] I_imm, S_imm, U_imm;
 wire [$clog(ALU_CODES_COUNT)-1:0] alu_code;
 
 assign opcode = instruction[6:0];
@@ -47,37 +43,16 @@ assign hazard_rs1 = rs1 ? mem_holds[rs1] : 0;
 assign hazard_rs2 = rs2 ? mem_holds[rs2] : 0;
 assign hazard_rd = rd ? mem_holds[rd] : 0;
 
-always @(*)
-	//decode immediate and detect hazard for the current instrucion
-	//decode instruction to determine the corresponding ALU code
-	case (opcode)
-		R_TYPE: begin
-			imm = 0;
-			hazard = hazard_rs1 || hazard_rs2 || hazard_rd;
-			alu_code = R_to_alu(funct3, funct7);
-		end
-		I_TYPE: begin 
-			imm = { {(XLEN-12){instruction[31]}} , instruction[31:20]}; 
-			hazard = hazard_rs1 || hazard_rd;
-			alu_code = I_to_alu(funct3);
-		end
-		S_TYPE: begin 
-			imm = { {(XLEN-12){instruction[31]}}, instruction[31:25], instruction[11:7] };
-			hazard = hazard_rs1 || hazard_rs2;
-			alu_code = I_to_alu(funct3);
-		end
-		U_TYPE: begin 
-			imm = { {(XLEN_20){instruction[31]}}, instruction[31:20] };
-			hazard = hazard_rd;
-			alu_code = I_to_alu(opcode);
-		end 
-		default: begin
-			imm = 0;
-			hazard = 0;
-			alu_code = 0;
-		end
-	endcase
-end
+// hazards and immediates can be determined based off of just the format
+assign R_hazard = hazard_rs1 || hazard_rs2 || hazard_rd;
+assign I_hazard = hazard_rs1 || hazard_rd;
+assign S_hazard = hazard_rs1 || hazard_rs2;
+assign U_hazard = hazard_rd;
+
+assign I_imm = { {(XLEN-12){instruction[31]}} , instruction[31:20]}; 
+assign S_imm = { {(XLEN-12){instruction[31]}}, instruction[31:25], instruction[11:7] };
+assign U_imm = { {(XLEN-20){instruction[31]}}, instruction[31:20] };
+
 
 always @(posedge clk) begin
 
@@ -130,12 +105,24 @@ function [$clog(ALU_CODES_COUNT)-1:0] R_to_alu (input [2:0] funct3, input [6:0] 
 		5: R_to_alu = funct7 ? ALU_SRA : ALU_SRL
 		6: R_to_alu = ALU_OR;
 		7: R_to_alu = ALU_AND;
-
+		default: 0;
 	endcase
 endfunction
 
-function [$clog(ALU_CODES_COUNT)-1:0] I_to_alu (input [2:0] funct3);
+function [$clog(ALU_CODES_COUNT)-1:0] I_to_alu (input [6:0] opcode, input [2:0] funct3, input [11:0] imm);
+	case (opcode)
+		k
+	case (funct3)
+		0: I_to_alu = ALU_ADD;
+		1: I_to_alu = imm [11:5] ? ALU_SLL;
+		2: I_to_alu = ALU_SLT;
+		3: I_to_alu = ALU_SLTU;
+		4: I_to_alu = ALU_XOR;
+		5: I_to_alu = funct7 ? ALU_SRA : ALU_SRL
+		6: I_to_alu = ALU_OR;
+		7: I_to_alu = ALU_AND;
 
+	endcase
 endfunction
 
 function [$clog(ALU_CODES_COUNT)-1:0] S_to_alu (input [2:0] funct3);
