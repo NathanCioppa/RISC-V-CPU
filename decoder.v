@@ -1,28 +1,26 @@
 
 `timescale 1ns/1ps
+`include "alu_codes.vh"
 
 module decoder #(
-parameter XREG_COUNT = 32, 
-parameter XLEN = 32,
-parameter INSTRUCTION_LEN = 32
+	parameter XREG_COUNT = 32, 
+	parameter XLEN = 32,
+	parameter INSTRUCTION_LEN = 32
 )(
-input clk,
-input [INSTRUCTION_LEN-1:0] instruction,
-input [XLEN-1:0] pc_data,
-input [XLEN-1:0] writeback_data,
-input [$clog(XREG_COUNT)-1:0] writeback_reg,
-output reg [XLEN-1:0] operand_buf [1:0],
-output reg [XLEN-1:0] pass_rd,
-output reg [XLEN-1:0] pass_opcode,
-output reg [2:0] pass_funct3,
-output reg [4:0] pass_funct5,
-output reg [6:0] pass_funct7
+	input clk,
+	input [INSTRUCTION_LEN-1:0] instruction,
+	input [XLEN-1:0] pc_data,
+	input [XLEN-1:0] writeback_data,
+	input [$clog(XREG_COUNT)-1:0] writeback_reg,
+	output reg [XLEN-1:0] operand_buf [1:0],
+	output reg [XLEN-1:0] pass_rd,
+	output reg [$clog(ALU_CODES_COUNT)-1:0] alu_op,
 );
 
 localparam R_TYPE = 7'b0110011
 localparam I_TYPE = 7'b0010011
 localparam S_TYPE = 7'b0100011
-localparam U_TYPE = 7'b0110111
+localparam U_TYPE = 7'b0x10111
 
 reg [XLEN-1:0] x [XREG_COUNT-1:0]; // CPU Registers, the RISC-V x-registers
 reg [XREG_COUNT-1:0] mem_holds;
@@ -33,6 +31,7 @@ wire [$clog(XREG_COUNT)-1:0] rd, rs1, rs2;
 wire [XLEN-1:0] rs1_data, rs2_data;
 wire hazard, hazard_rs1, hazard_rs2, hazard_rd;
 wire [XLEN-1:0] imm;
+wire [$clog(ALU_CODES_COUNT)-1:0] alu_code;
 
 assign opcode = instruction[6:0];
 assign rd = instruction[11:7];
@@ -50,26 +49,32 @@ assign hazard_rd = rd ? mem_holds[rd] : 0;
 
 always @(*)
 	//decode immediate and detect hazard for the current instrucion
+	//decode instruction to determine the corresponding ALU code
 	case (opcode)
 		R_TYPE: begin
 			imm = 0;
 			hazard = hazard_rs1 || hazard_rs2 || hazard_rd;
+			alu_code = R_to_alu(funct3, funct7);
 		end
 		I_TYPE: begin 
 			imm = { {(XLEN-12){instruction[31]}} , instruction[31:20]}; 
 			hazard = hazard_rs1 || hazard_rd;
+			alu_code = I_to_alu(funct3);
 		end
 		S_TYPE: begin 
 			imm = { {(XLEN-12){instruction[31]}}, instruction[31:25], instruction[11:7] };
 			hazard = hazard_rs1 || hazard_rs2;
+			alu_code = I_to_alu(funct3);
 		end
 		U_TYPE: begin 
 			imm = { {(XLEN_20){instruction[31]}}, instruction[31:20] };
 			hazard = hazard_rd;
+			alu_code = I_to_alu(opcode);
 		end 
 		default: begin
 			imm = 0;
 			hazard = 0;
+			alu_code = 0;
 		end
 	endcase
 end
@@ -84,27 +89,24 @@ always @(posedge clk) begin
 		blocking <= 1;
 	end
 	else begin
+		alu_op <= alu_code;
+		blocking <= 0;
 		case (opcode)
 			R_TYPE: begin 
-				blocking <= 0;
 				mem_holds[rd] <= 1;
 				operand_buf[0] <= rs1_data;
 				operand_buf[1] <= rs2_data;
 			end
 			I_TYPE: begin 
-				blocking <= 0;
 				mem_holds[rd] <= 1;
 				operand_buf[0] <= rs1_data;
 				operand_buf[1] <= imm; 
 			end
 			S_TYPE: begin
-			       // stores value of rs2 to address rs1+imm
-				blocking <= 0;
 				operand_buf[0] <= rs1_data;
 				operand_buf[1] <= imm;
 			end
 			U_TYPE: begin 
-				blocking <= 0;
 				mem_holds[rd] <= 1;
 				operand_buf[0] <= imm;
 				operand_buf[1] <= pc;
@@ -116,4 +118,33 @@ always @(posedge clk) begin
 	end	
 end
 
+// Returns the ALU code that corresponds to the R Format with given functs
+// Note this currently has no handling of malformed instructions
+function [$clog(ALU_CODES_COUNT)-1:0] R_to_alu (input [2:0] funct3, input [6:0] funct7);
+	case (funct3)
+		0: R_to_alu = funct7 ? ALU_SUB : ALU_ADD;
+		1: R_to_alu = ALU_SLL;
+		2: R_to_alu = ALU_SLT;
+		3: R_to_alu = ALU_SLTU;
+		4: R_to_alu = ALU_XOR;
+		5: R_to_alu = funct7 ? ALU_SRA : ALU_SRL
+		6: R_to_alu = ALU_OR;
+		7: R_to_alu = ALU_AND;
+
+	endcase
+endfunction
+
+function [$clog(ALU_CODES_COUNT)-1:0] I_to_alu (input [2:0] funct3);
+
+endfunction
+
+function [$clog(ALU_CODES_COUNT)-1:0] S_to_alu (input [2:0] funct3);
+
+endfunction
+
+function [$clog(ALU_CODES_COUNT)-1:0] U_to_alu (input [6:0] opcode);
+
+endfunction
+
 endmodule
+
