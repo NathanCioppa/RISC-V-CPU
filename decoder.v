@@ -2,6 +2,9 @@
 `timescale 1ns/1ps
 `include "alu_codes.vh"
 
+localparam OP = 7'b0110011; // ADD, SUB, SLL, SLT, SLTU, XOR, SRL, SRA, OR, AND
+localparam OP_IMM = 7'b0010011; // ADDI, SLTI, SLTIU, XORI, ORI, ANDI, SLLI, SRLI, SRAI
+
 module decoder #(
 	parameter XREG_COUNT = 32, 
 	parameter XLEN = 32,
@@ -12,9 +15,11 @@ module decoder #(
 	input [XLEN-1:0] pc_data,
 	input [XLEN-1:0] writeback_data,
 	input [$clog(XREG_COUNT)-1:0] writeback_reg,
-	output reg [XLEN-1:0] operand_buf [1:0],
-	output reg [XLEN-1:0] pass_rd,
-	output reg [$clog(ALU_CODES_COUNT)-1:0] alu_op,
+	output reg [XLEN-1:0] out_operands [1:0],
+	output reg [XLEN-1:0] out_rd,
+	output reg [$clog(ALU_CODES_COUNT)-1:0] out_alu_code,
+	output reg out_to_mem,
+	output reg [2:0] out_size_hint
 );
 
 reg [XLEN-1:0] x [XREG_COUNT-1:0]; // CPU Registers, the RISC-V x-registers
@@ -27,7 +32,13 @@ wire [XLEN-1:0] rs1_data, rs2_data;
 wire hazard, hazard_rs1, hazard_rs2, hazard_rd;
 wire R_hazard, I_hazard, S_hazard, U_hazard;
 wire [XLEN-1:0] I_imm, S_imm, U_imm;
+wire I_shift_arith;
+wire opcode_illegal;
+
+wire [XLEN-1:0] operands [1:0];
 wire [$clog(ALU_CODES_COUNT)-1:0] alu_code;
+wire to_mem;
+wire [2:0] size_hint;
 
 assign opcode = instruction[6:0];
 assign rd = instruction[11:7];
@@ -50,87 +61,127 @@ assign S_hazard = hazard_rs1 || hazard_rs2;
 assign U_hazard = hazard_rd;
 
 assign I_imm = { {(XLEN-12){instruction[31]}} , instruction[31:20]}; 
+assign I_shift_arith = instruction[30];
 assign S_imm = { {(XLEN-12){instruction[31]}}, instruction[31:25], instruction[11:7] };
 assign U_imm = { {(XLEN-20){instruction[31]}}, instruction[31:20] };
 
+always @(*) begin
+case (opcode)
+        7'b0110111: begin // LUI
+        end
+        7'b0010111: begin // AUIPC
+        end
+        7'b1101111: begin // JAL
+        end
+        7'b1100111: begin // JALR
+        end
+        7'b1100011: begin // BRANCH (BEQ, BNE, BLT, BGE, BLTU, BGEU)
+        end
+        7'b0000011: begin // LOAD (LB, LH, LW, LBU, LHU)
+        end
+        7'b0100011: begin // STORE (SB, SH, SW)
+        end
+        OP_IMM: begin 
+		operands[0] = rs1_data;
+		operands[1] = funct3 == 1 || funct3 == 5 ? I_imm[4:0] : I_imm;
+		alu_code = OP_IMM_alu_code(funct3, I_shift_arith);
+		to_mem = 0;
+		size_hint = 0;
+        end
+        OP: begin
+		operands[0] = rs1_data;
+		operands[1] = rs2_data;
+		alu_code = OP_alu_code(funct3, funct7);
+		to_mem = 0;
+		size_hint = 0;
+        end
+        7'b0001111: begin // MISC-MEM (FENCE)
+        end
+        7'b1110011: begin // SYSTEM (ECALL, EBREAK)
+        end
+        default: opcode_illegal = 1;
+    endcase	
+end
 
 always @(posedge clk) begin
 
 	// WRITEBACK
 	mem_holds[writeback_reg] <= writeback_data
 
-	// DECODE
+	// Check hazards
 	if (hazard) begin
 		blocking <= 1;
 	end
 	else begin
-		alu_op <= alu_code;
+		out_alu_code <= alu_code;
 		blocking <= 0;
-		case (opcode)
-			R_TYPE: begin 
-				mem_holds[rd] <= 1;
-				operand_buf[0] <= rs1_data;
-				operand_buf[1] <= rs2_data;
-			end
-			I_TYPE: begin 
-				mem_holds[rd] <= 1;
-				operand_buf[0] <= rs1_data;
-				operand_buf[1] <= imm; 
-			end
-			S_TYPE: begin
-				operand_buf[0] <= rs1_data;
-				operand_buf[1] <= imm;
-			end
-			U_TYPE: begin 
-				mem_holds[rd] <= 1;
-				operand_buf[0] <= imm;
-				operand_buf[1] <= pc;
-			end
-			default: begin 
-				// handle case of invalid opcode, maybe an exception?
-			end
-		endcase
 	end	
 end
 
-// Returns the ALU code that corresponds to the R Format with given functs
-// Note this currently has no handling of malformed instructions
-function [$clog(ALU_CODES_COUNT)-1:0] R_to_alu (input [2:0] funct3, input [6:0] funct7);
-	case (funct3)
-		0: R_to_alu = funct7 ? ALU_SUB : ALU_ADD;
-		1: R_to_alu = ALU_SLL;
-		2: R_to_alu = ALU_SLT;
-		3: R_to_alu = ALU_SLTU;
-		4: R_to_alu = ALU_XOR;
-		5: R_to_alu = funct7 ? ALU_SRA : ALU_SRL
-		6: R_to_alu = ALU_OR;
-		7: R_to_alu = ALU_AND;
-		default: 0;
-	endcase
+function [$clog(ALU_CODES_COUNT)-1:0] OP_alu_code(input [2:0] funct3, input [6:0] funct7);
+	begin
+		case (funct3)
+			0: case (funct7) 
+				0: OP_alu_code = ALU_ADD;
+				32: OP_alu_code = ALU_SUB;
+				default: OP_alu_code = ALU_INVALID;
+			endcase
+
+			1: case (funct7)
+				0: OP_alu_code = ALU_SLL;
+				default: OP_alu_code = ALU_INVALID;
+			endcase
+
+			2: case (funct7) 
+				0: OP_alu_code = ALU_SLT;
+				default: OP_alu_code = ALU_INVALID;
+			endcase
+
+			3: case (funct7)
+				0: OP_alu_code = ALU_SLTU;
+				default: OP_alu_code = ALU_INVALID;
+			endcase
+			
+			4: case (funct7)
+				0: OP_alu_code = ALU_XOR;
+				default: OP_alu_code = ALU_INVALID;
+			endcase
+			
+			5: case (funct7)
+				0: OP_alu_code = ALU_SRL;
+				32: OP_alu_code = ALU_SRA;
+				default: OP_alu_code = ALU_INVALID;
+			endcase
+			
+			6: case (funct7)
+				0: OP_alu_code = ALU_OR;
+				default: OP_alu_code = ALU_INVALID;
+			endcase
+			
+			7: case (funct7) 
+				0: OP_alu_code = ALU_AND;
+				default: OP_alu_code = ALU_INVALID;
+			endcase
+			
+			default: OP_alu_code = ALU_INVALID;
+		endcase
+
+	end
 endfunction
 
-function [$clog(ALU_CODES_COUNT)-1:0] I_to_alu (input [6:0] opcode, input [2:0] funct3, input [11:0] imm);
-	case (opcode)
-		k
-	case (funct3)
-		0: I_to_alu = ALU_ADD;
-		1: I_to_alu = imm [11:5] ? ALU_SLL;
-		2: I_to_alu = ALU_SLT;
-		3: I_to_alu = ALU_SLTU;
-		4: I_to_alu = ALU_XOR;
-		5: I_to_alu = funct7 ? ALU_SRA : ALU_SRL
-		6: I_to_alu = ALU_OR;
-		7: I_to_alu = ALU_AND;
-
-	endcase
-endfunction
-
-function [$clog(ALU_CODES_COUNT)-1:0] S_to_alu (input [2:0] funct3);
-
-endfunction
-
-function [$clog(ALU_CODES_COUNT)-1:0] U_to_alu (input [6:0] opcode);
-
+function [XLEN-1:0] OP_IMM_alu_code(input [2:0] funct3, input I_shift_arith);
+	begin
+		case (funct3)
+			0: OP_IMM_alu_code = ALU_ADD;
+			1: OP_IMM_alu_code = ALU_SLL;
+			2: OP_IMM_alu_code = ALU_SLT;
+			3: OP_IMM_alu_code = ALU_SLTU;
+			4: OP_IMM_alu_code = ALU_XOR;
+			5: OP_IMM_alu_code = I_shift_arith ? ALU_SRA : ALU_SRL;
+			6: OP_IMM_alu_code = ALU_OR;
+			7: OP_IMM_alu_code = ALU_AND;
+		endcase
+	end
 endfunction
 
 endmodule
