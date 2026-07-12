@@ -31,7 +31,7 @@ wire [$clog(XREG_COUNT)-1:0] rd, rs1, rs2;
 wire [XLEN-1:0] rs1_data, rs2_data;
 wire hazard, hazard_rs1, hazard_rs2, hazard_rd;
 wire R_hazard, I_hazard, S_hazard, U_hazard;
-wire [XLEN-1:0] I_imm, S_imm, U_imm;
+wire [XLEN-1:0] I_imm, S_imm, U_imm, J_imm, B_imm;
 wire I_shift_arith;
 wire opcode_illegal;
 
@@ -60,10 +60,16 @@ assign I_hazard = hazard_rs1 || hazard_rd;
 assign S_hazard = hazard_rs1 || hazard_rs2;
 assign U_hazard = hazard_rd;
 
-assign I_imm = { {(XLEN-12){instruction[31]}} , instruction[31:20]}; 
+// _imm wires are set exactly as described in RISC-V Specifications for clarity
+// (thats why for example I_imm doesnt just have instruction[30:20] after sign extension even though it is equivilent
+// https://docs.riscv.org/reference/isa/v20260120/unpriv/rv32.html#immtypes
+assign I_imm = { {(XLEN-12){instruction[31]}}, instruction[30:25], instruction[24:21], instruction[20] }; 
+assign S_imm = { {(XLEN-12){instruction[31]}}, instruction[30:25], instruction[11:8], instruction[7] };
+assign B_imm = { {(XLEN-12){instruction[31]}}, instruction[7], instruction[30:25], instruction[11:8], 0 };
+assign U_imm = { {(XLEN-31){instruction[31]}}, instruction[30:20], instruction[19:12], {12{0}} };
+assign J_imm = { {(XLEN-20){instruction[31]}}, instruction[19:12], instruction[20], instruction[30:25], instruction[24:21], 0 }
+
 assign I_shift_arith = instruction[30];
-assign S_imm = { {(XLEN-12){instruction[31]}}, instruction[31:25], instruction[11:7] };
-assign U_imm = { {(XLEN-20){instruction[31]}}, instruction[31:20] };
 
 always @(*) begin
 case (opcode)
