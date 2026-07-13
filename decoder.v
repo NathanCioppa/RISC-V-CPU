@@ -4,6 +4,20 @@
 
 localparam OP = 7'b0110011; // ADD, SUB, SLL, SLT, SLTU, XOR, SRL, SRA, OR, AND
 localparam OP_IMM = 7'b0010011; // ADDI, SLTI, SLTIU, XORI, ORI, ANDI, SLLI, SRLI, SRAI
+localparam LOAD = 7'b0000011; // LB, LH, LW, LBU, LHU
+localparam STORE = 7'b0100011; // SB, SH, SW
+
+localparam MEM_HINT_NONE = 2'b00;
+localparam MEM_HINT_STORE = 2'b01;
+localparam MEM_HINT_LOAD = 2'b10;
+localparam MEM_HINT_INVALID = 2'b11;
+
+localparam SIZE_HINT_WORD = 3'b000;
+localparam SIZE_HINT_HALF = 3'b001;
+localparam SIZE_HINT_BYTE = 3'b010;
+localparam SIZE_HINT_UBYTE = 3'b110;
+localparam SIZE_HINT_UHALF = 3'b101;
+localparam SIZE_HINT_INVALID = 3'b111;
 
 module decoder #(
 	parameter XREG_COUNT = 32, 
@@ -83,30 +97,40 @@ case (opcode)
         end
         7'b1100011: begin // BRANCH (BEQ, BNE, BLT, BGE, BLTU, BGEU)
         end
-        7'b0000011: begin // LOAD (LB, LH, LW, LBU, LHU)
+        LOAD: begin
+		operands[0] = rs1_data;
+		operands[1] = I_imm;
+		alu_code = ALU_ADD;
+		mem_hint = MEM_HINT_LOAD;
+		size_hint = LOAD_size_hint(funct3);
         end
-        7'b0100011: begin // STORE (SB, SH, SW)
+        STORE: begin 
+		operands[0] = rs1_data;
+		operands[1] = S_imm;
+		alu_code = ALU_ADD;
+		mem_hint = MEM_HINT_STORE;
+		size_hint = STORE_size_hint(funct3);
         end
         OP_IMM: begin 
 		operands[0] = rs1_data;
 		operands[1] = funct3 == 1 || funct3 == 5 ? I_imm[4:0] : I_imm;
 		alu_code = OP_IMM_alu_code(funct3, I_shift_arith);
-		to_mem = 0;
-		size_hint = 0;
+		to_mem = MEM_HINT_NONE;
+		size_hint = SIZE_HINT_INVALID;
         end
         OP: begin
 		operands[0] = rs1_data;
 		operands[1] = rs2_data;
 		alu_code = OP_alu_code(funct3, funct7);
-		to_mem = 0;
-		size_hint = 0;
+		to_mem = MEM_HINT_NONE;
+		size_hint = SIZE_HINT_INVALID;
         end
         7'b0001111: begin // MISC-MEM (FENCE)
         end
         7'b1110011: begin // SYSTEM (ECALL, EBREAK)
         end
         default: opcode_illegal = 1;
-    endcase	
+    endcase
 end
 
 always @(posedge clk) begin
@@ -186,6 +210,32 @@ function [XLEN-1:0] OP_IMM_alu_code(input [2:0] funct3, input I_shift_arith);
 			5: OP_IMM_alu_code = I_shift_arith ? ALU_SRA : ALU_SRL;
 			6: OP_IMM_alu_code = ALU_OR;
 			7: OP_IMM_alu_code = ALU_AND;
+			default:
+				OP_IMM_alu_code = ALU_INVALID;
+		endcase
+	end
+endfunction
+
+function [2:0] LOAD_size_hint(input [2:0] funct3);
+	begin
+		case (funct3)
+			0: LOAD_size_hint = SIZE_HINT_BYTE;
+			1: LOAD_size_hint = SIZE_HINT_HALF;
+			2: LOAD_size_hint = SIZE_HINT_WORD;
+			4: LOAD_size_hint = SIZE_HINT_UBYTE;
+			5: LOAD_size_hint = SIZE_HINT_UHALF;
+			default: LOAD_size_hint = SIZE_HINT_INVALID;
+		endcase
+	end
+endfunction
+
+function [2:0] STORE_size_hint(input [2:0] funct3);
+	begin
+		case (funct3)
+			0: STORE_size_hint = SIZE_HINT_BYTE;
+			1: STORE_size_hint = SIZE_HINT_HALF;
+			2: STORE_size_hint = SIZE_HINT_WORD;
+			default: STORE_size_hint = SIZE_HINT_INVALID;
 		endcase
 	end
 endfunction
