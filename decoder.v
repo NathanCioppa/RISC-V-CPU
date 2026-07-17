@@ -6,6 +6,8 @@ localparam OP = 7'b0110011; // ADD, SUB, SLL, SLT, SLTU, XOR, SRL, SRA, OR, AND
 localparam OP_IMM = 7'b0010011; // ADDI, SLTI, SLTIU, XORI, ORI, ANDI, SLLI, SRLI, SRAI
 localparam LOAD = 7'b0000011; // LB, LH, LW, LBU, LHU
 localparam STORE = 7'b0100011; // SB, SH, SW
+localparam LUI = 7'b0110111;
+localparam AUIPC = 7'b0010111;
 
 localparam MEM_HINT_NONE = 2'b00;
 localparam MEM_HINT_STORE = 2'b01;
@@ -87,9 +89,19 @@ assign I_shift_arith = instruction[30];
 
 always @(*) begin
 case (opcode)
-        7'b0110111: begin // LUI
+        LUI: begin
+		operands[0] = 0;
+		operands[1] = U_imm;
+		alu_code = ALU_AUI;
+		mem_hint = MEM_HINT_INVALID;
+		size_hint = SIZE_HINT_INVALID;
         end
-        7'b0010111: begin // AUIPC
+        AUIPC: begin
+		operands[0] = pc;
+		operands[1] = U_imm;
+		alu_code = ALU_ADD;
+		mem_hint = MEM_HINT_INVALID;
+		size_hint = SIZE_HINT_INVALD;
         end
         7'b1101111: begin // JAL
         end
@@ -136,7 +148,8 @@ end
 always @(posedge clk) begin
 
 	// WRITEBACK
-	mem_holds[writeback_reg] <= writeback_data
+	x[writeback_reg] <= writeback_data
+	mem_holds[writeback_reg] <= 0;
 
 	// Check hazards
 	if (hazard) begin

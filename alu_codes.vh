@@ -2,7 +2,7 @@
 `ifndef _alu_codes_h
 `define _alu_codes_h
 
-localparam ALU_CODES_COUNT = 11;
+localparam ALU_CODES_COUNT = 12;
 
 localparam ALU_INVALID = 0;
 localparam ALU_ADD = 1;
@@ -15,6 +15,7 @@ localparam ALU_SRL = 7;
 localparam ALU_SRA = 8;
 localparam ALU_SLT = 9;
 localparam ALU_SLTU = 10;
+localparam ALU_AUI = 11;
 
 `endif
 

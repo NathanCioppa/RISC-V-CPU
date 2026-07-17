@@ -24,6 +24,7 @@ always @(posedge clk) begin
 		ALU_SRA: result <= $signed(operands[0]) >>> operands[1];
 		ALU_SLT: result <= $signed(operands[0]) < $signed(operands[1])? 1:0;
 		ALU_SLTU: result <= operands[0] > operands[1] ? 1:0;
+		ALU_AUI: result <= operands[0] + operands[1] << 12;
 	endcase
 end
 
