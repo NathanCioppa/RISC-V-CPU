@@ -1,6 +1,7 @@
 
 `timescale 1ns/1ps
 `include "alu_codes.vh"
+`include "jumper_codes.vh"
 
 localparam OP = 7'b0110011; // ADD, SUB, SLL, SLT, SLTU, XOR, SRL, SRA, OR, AND
 localparam OP_IMM = 7'b0010011; // ADDI, SLTI, SLTIU, XORI, ORI, ANDI, SLLI, SRLI, SRAI
@@ -8,6 +9,9 @@ localparam LOAD = 7'b0000011; // LB, LH, LW, LBU, LHU
 localparam STORE = 7'b0100011; // SB, SH, SW
 localparam LUI = 7'b0110111;
 localparam AUIPC = 7'b0010111;
+localparam JAL = 7'b1101111;
+localparam JALR = 7'b1100111;
+localparam BRANCH = 7'b1100011; // BEQ, BNE, BLT, BGE, BLTU, BGEU
 
 localparam MEM_HINT_NONE = 2'b00;
 localparam MEM_HINT_STORE = 2'b01;
@@ -51,7 +55,7 @@ wire [XLEN-1:0] I_imm, S_imm, U_imm, J_imm, B_imm;
 wire I_shift_arith;
 wire opcode_illegal;
 
-wire [XLEN-1:0] operands [1:0];
+wire [XLEN-1:0] operands [3:0];
 wire [$clog(ALU_CODES_COUNT)-1:0] alu_code;
 wire to_mem;
 wire [2:0] size_hint;
@@ -81,9 +85,9 @@ assign U_hazard = hazard_rd;
 // https://docs.riscv.org/reference/isa/v20260120/unpriv/rv32.html#immtypes
 assign I_imm = { {(XLEN-12){instruction[31]}}, instruction[30:25], instruction[24:21], instruction[20] }; 
 assign S_imm = { {(XLEN-12){instruction[31]}}, instruction[30:25], instruction[11:8], instruction[7] };
-assign B_imm = { {(XLEN-12){instruction[31]}}, instruction[7], instruction[30:25], instruction[11:8], 0 };
+assign B_imm = { {(XLEN-12){instruction[31]}}, instruction[7], instruction[30:25], instruction[11:8], 1'b0 };
 assign U_imm = { {(XLEN-31){instruction[31]}}, instruction[30:20], instruction[19:12], {12{0}} };
-assign J_imm = { {(XLEN-20){instruction[31]}}, instruction[19:12], instruction[20], instruction[30:25], instruction[24:21], 0 }
+assign J_imm = { {(XLEN-20){instruction[31]}}, instruction[19:12], instruction[20], instruction[30:25], instruction[24:21], 1'b0 }
 
 assign I_shift_arith = instruction[30];
 
@@ -92,6 +96,8 @@ case (opcode)
         LUI: begin
 		operands[0] = 0;
 		operands[1] = U_imm;
+		operands[2] = 0;
+		operands[3] = 0;
 		alu_code = ALU_AUI;
 		mem_hint = MEM_HINT_INVALID;
 		size_hint = SIZE_HINT_INVALID;
@@ -99,15 +105,32 @@ case (opcode)
         AUIPC: begin
 		operands[0] = pc;
 		operands[1] = U_imm;
+		operands[2] = 0;
+		operands[3] = 0;
 		alu_code = ALU_ADD;
 		mem_hint = MEM_HINT_INVALID;
 		size_hint = SIZE_HINT_INVALD;
         end
-        7'b1101111: begin // JAL
+        JAL: begin
+		operands[0] = pc;
+		operands[1] = 4;
+		operands[2] = pc;
+		operands[3] = J_imm;
+		alu_code = ALU_ADD;
+		mem_hint = MEM_HINT_INVALID;
+		size_hint = SIZE_HINT_INVALD;
+        	
         end
-        7'b1100111: begin // JALR
+        JALR: begin
+		operands[0] = pc;
+		operands[1] = 4;
+		operands[2] = rs1_data;
+		operands[3] = I_imm;
+		alu_code = ALU_ADD;
+		mem_hint = MEM_HINT_INVALID;
+		size_hint = SIZE_HINT_INVALD;
         end
-        7'b1100011: begin // BRANCH (BEQ, BNE, BLT, BGE, BLTU, BGEU)
+        BRANCH: begin 
         end
         LOAD: begin
 		operands[0] = rs1_data;
@@ -119,6 +142,8 @@ case (opcode)
         STORE: begin 
 		operands[0] = rs1_data;
 		operands[1] = S_imm;
+		operands[2] = 0;
+		operands[3] = 0;
 		alu_code = ALU_ADD;
 		mem_hint = MEM_HINT_STORE;
 		size_hint = STORE_size_hint(funct3);
@@ -126,6 +151,8 @@ case (opcode)
         OP_IMM: begin 
 		operands[0] = rs1_data;
 		operands[1] = funct3 == 1 || funct3 == 5 ? I_imm[4:0] : I_imm;
+		operands[2] = 0;
+		operands[3] = 0;
 		alu_code = OP_IMM_alu_code(funct3, I_shift_arith);
 		to_mem = MEM_HINT_NONE;
 		size_hint = SIZE_HINT_INVALID;
@@ -133,6 +160,8 @@ case (opcode)
         OP: begin
 		operands[0] = rs1_data;
 		operands[1] = rs2_data;
+		operands[2] = 0;
+		operands[3] = 0;
 		alu_code = OP_alu_code(funct3, funct7);
 		to_mem = MEM_HINT_NONE;
 		size_hint = SIZE_HINT_INVALID;

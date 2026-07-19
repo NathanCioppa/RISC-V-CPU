@@ -3,28 +3,27 @@
 `include "alu_codes.vh"
 
 module alu #(
-	parameter WORD_SIZE = 32;
+	parameter XLEN = 32;
 )(
 	input clk,
-	input [WORD_SIZE-1:0] operands [1:0],
+	input [XLEN-1:0] alu_lhs, alu_rhs,
 	input [$clog(ALU_CODES_COUNT)-1:0] alu_op,
-	output reg [WORD_SIZE-1:0] result
+	output reg [XLEN-1:0] result
 ); 
 
 always @(posedge clk) begin
 	case (alu_op)
-		// always put operands[0] on left and [1] on right
-		ALU_ADD: result <= operands[0] + operands[1];
-		ALU_SUB: result <= operands[0] - operands[1];
-		ALU_AND: result <= operands[0] & operands[1]; 
-		ALU_OR: result <= operands[0] | operands[1];
-		ALU_XOR: result <= operands[0] ^ operands[1];
-		ALU_SLL: result <= operands[0] << operands[1];
-		ALU_SRL: result <= operands[0] >> operands[1];
-		ALU_SRA: result <= $signed(operands[0]) >>> operands[1];
-		ALU_SLT: result <= $signed(operands[0]) < $signed(operands[1])? 1:0;
-		ALU_SLTU: result <= operands[0] > operands[1] ? 1:0;
-		ALU_AUI: result <= operands[0] + operands[1] << 12;
+		ALU_ADD: result <= alu_lhs + alu_rhs;
+		ALU_SUB: result <= alu_lhs - alu_rhs;
+		ALU_AND: result <= alu_lhs & alu_rhs; 
+		ALU_OR: result <= alu_lhs | alu_rhs;
+		ALU_XOR: result <= alu_lhs ^ alu_rhs;
+		ALU_SLL: result <= alu_lhs << alu_rhs;
+		ALU_SRL: result <= alu_lhs >> alu_rsh;
+		ALU_SRA: result <= $signed(alu_lhs) >>> alu_rhs;
+		ALU_SLT: result <= $signed(alu_lhs) < $signed(alu_rhs)? 1:0;
+		ALU_SLTU: result <= alu_lhs > alu_rhs ? 1:0;
+		ALU_AUI: result <= alu_lhs + alu_rhs << 12;
 	endcase
 end
 
