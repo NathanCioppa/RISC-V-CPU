@@ -2,6 +2,8 @@
 `timescale 1ns/1ps
 `include "alu_codes.vh"
 `include "jumper_codes.vh"
+`include "mem_codes.vh"
+`include "size_codes.vh"
 
 localparam OP = 7'b0110011; // ADD, SUB, SLL, SLT, SLTU, XOR, SRL, SRA, OR, AND
 localparam OP_IMM = 7'b0010011; // ADDI, SLTI, SLTIU, XORI, ORI, ANDI, SLLI, SRLI, SRAI
@@ -12,18 +14,8 @@ localparam AUIPC = 7'b0010111;
 localparam JAL = 7'b1101111;
 localparam JALR = 7'b1100111;
 localparam BRANCH = 7'b1100011; // BEQ, BNE, BLT, BGE, BLTU, BGEU
-
-localparam MEM_HINT_NONE = 2'b00;
-localparam MEM_HINT_STORE = 2'b01;
-localparam MEM_HINT_LOAD = 2'b10;
-localparam MEM_HINT_INVALID = 2'b11;
-
-localparam SIZE_HINT_WORD = 3'b000;
-localparam SIZE_HINT_HALF = 3'b001;
-localparam SIZE_HINT_BYTE = 3'b010;
-localparam SIZE_HINT_UBYTE = 3'b110;
-localparam SIZE_HINT_UHALF = 3'b101;
-localparam SIZE_HINT_INVALID = 3'b111;
+localparam FENCE = 7'b0001111;
+localparam SYSTEM = 7'b1110011; // ECALL, EBREAK 
 
 module decoder #(
 	parameter XREG_COUNT = 32, 
@@ -32,14 +24,20 @@ module decoder #(
 )(
 	input clk,
 	input [INSTRUCTION_LEN-1:0] instruction,
-	input [XLEN-1:0] pc_data,
-	input [XLEN-1:0] writeback_data,
-	input [$clog(XREG_COUNT)-1:0] writeback_reg,
-	output reg [XLEN-1:0] out_operands [1:0],
+
+	input [XLEN-1:0] alu_writeback_data,
+	input [$clog(XREG_COUNT)-1:0] alu_writeback_reg,
+	input [XLEN-1:0] load_writeback_data,
+	input [$clog(XREG_COUNT)-1:0] load_writeback_reg,
+	input [XLEN-1:0] pc_writeback_data,
+	input do_pc_writeback,
+	
+	output reg [XLEN-1:0] out_operands [3:0],
 	output reg [XLEN-1:0] out_rd,
 	output reg [$clog(ALU_CODES_COUNT)-1:0] out_alu_code,
-	output reg out_to_mem,
-	output reg [2:0] out_size_hint
+	output reg [1:0] out_mem_code,
+	output reg [2:0] out_size_code
+	output reg [$clog(JUMPER_CODES_COUNT)-1:0] out_jumper_code,
 );
 
 reg [XLEN-1:0] x [XREG_COUNT-1:0]; // CPU Registers, the RISC-V x-registers
@@ -55,10 +53,13 @@ wire [XLEN-1:0] I_imm, S_imm, U_imm, J_imm, B_imm;
 wire I_shift_arith;
 wire opcode_illegal;
 
-wire [XLEN-1:0] operands [3:0];
-wire [$clog(ALU_CODES_COUNT)-1:0] alu_code;
-wire to_mem;
-wire [2:0] size_hint;
+reg [XLEN-1:0] operands [3:0];
+reg [$clog(ALU_CODES_COUNT)-1:0] alu_code;
+reg [$clog(MEM_CODES_COUNT)-1:0] mem_code;
+reg [2:0] size_code;
+reg [$clog(JUMPER_CODES_COUNT)-1:0] jumper_code;
+
+
 
 assign opcode = instruction[6:0];
 assign rd = instruction[11:7];
@@ -99,17 +100,21 @@ case (opcode)
 		operands[2] = 0;
 		operands[3] = 0;
 		alu_code = ALU_AUI;
-		mem_hint = MEM_HINT_INVALID;
-		size_hint = SIZE_HINT_INVALID;
+		mem_code = MEM_INVALID;
+		size_code = SIZE_INVALID;
+		jumper_code = JUMP_INVALID;
+		opcode_illegal = 0;
         end
         AUIPC: begin
 		operands[0] = pc;
 		operands[1] = U_imm;
 		operands[2] = 0;
 		operands[3] = 0;
-		alu_code = ALU_ADD;
-		mem_hint = MEM_HINT_INVALID;
-		size_hint = SIZE_HINT_INVALD;
+		alu_code = ALU_AUI;
+		mem_code = MEM_INVALID;
+		size_code = SIZE_INVALD;
+		jumper_code = JUMP_INVALID;
+		opcode_illegal = 0;
         end
         JAL: begin
 		operands[0] = pc;
@@ -117,9 +122,10 @@ case (opcode)
 		operands[2] = pc;
 		operands[3] = J_imm;
 		alu_code = ALU_ADD;
-		mem_hint = MEM_HINT_INVALID;
-		size_hint = SIZE_HINT_INVALD;
-        	
+		mem_code = MEM_INVALID;
+		size_code = SIZE_INVALD;
+		jumper_code = JUMPER_UNCOND;
+		opcode_illegal = 0;
         end
         JALR: begin
 		operands[0] = pc;
@@ -127,17 +133,32 @@ case (opcode)
 		operands[2] = rs1_data;
 		operands[3] = I_imm;
 		alu_code = ALU_ADD;
-		mem_hint = MEM_HINT_INVALID;
-		size_hint = SIZE_HINT_INVALD;
+		mem_code = MEM_INVALID;
+		size_code = SIZE_INVALD;
+		jumper_code = JUMP_UNCOND;
+		opcode_illegal = 0;
         end
         BRANCH: begin 
+		operands[0] = rs1_data;
+		operands[1] = rs2_data;
+		operands[2] = pc;
+		operands[3] = B_imm;
+		alu_code = ALU_INVALID;
+		mem_code = MEM_INVALID;
+		size_code = SIZE_INVALD;
+		jumper_code = BRANCH_jumper_code(funct3);
+		opcode_illegal = 0;
         end
         LOAD: begin
 		operands[0] = rs1_data;
 		operands[1] = I_imm;
+		operands[2] = 0;
+		operands[3] = 0;
 		alu_code = ALU_ADD;
-		mem_hint = MEM_HINT_LOAD;
-		size_hint = LOAD_size_hint(funct3);
+		mem_code = MEM_LOAD;
+		size_code = LOAD_size_hint(funct3);
+		jumper_code = JUMP_INVALID;
+		opcode_illegal = 0;
         end
         STORE: begin 
 		operands[0] = rs1_data;
@@ -145,8 +166,10 @@ case (opcode)
 		operands[2] = 0;
 		operands[3] = 0;
 		alu_code = ALU_ADD;
-		mem_hint = MEM_HINT_STORE;
-		size_hint = STORE_size_hint(funct3);
+		mem_code = MEM_STORE;
+		size_code = STORE_size_hint(funct3);
+		jumper_code = JUMP_INVALID;
+		opcode_illegal = 0;
         end
         OP_IMM: begin 
 		operands[0] = rs1_data;
@@ -154,8 +177,10 @@ case (opcode)
 		operands[2] = 0;
 		operands[3] = 0;
 		alu_code = OP_IMM_alu_code(funct3, I_shift_arith);
-		to_mem = MEM_HINT_NONE;
-		size_hint = SIZE_HINT_INVALID;
+		mem_code = MEM_INVALID;
+		size_code = SIZE_INVALID;
+		jumper_code = JUMP_INVALID;
+		opcode_illegal = 0;
         end
         OP: begin
 		operands[0] = rs1_data;
@@ -163,32 +188,75 @@ case (opcode)
 		operands[2] = 0;
 		operands[3] = 0;
 		alu_code = OP_alu_code(funct3, funct7);
-		to_mem = MEM_HINT_NONE;
-		size_hint = SIZE_HINT_INVALID;
+		mem_code = MEM_INVALID;
+		size_code = SIZE_INVALID;
+		jumper_code = JUMP_INVALID;
+		opcode_illegal = 0;
         end
-        7'b0001111: begin // MISC-MEM (FENCE)
+        FENCE: begin // NO OP since this is a single core CPU
+		operands[0] = 0;
+		operands[1] = 0;
+		operands[2] = 0;
+		operands[3] = 0;
+		alu_code = ALU_INVALID;
+		mem_code = MEM_INVALID;
+		size_code = SIZE_INVALID;
+		jumper_code = JUMP_INVALID;
+		opcode_illegal = 0;
         end
-        7'b1110011: begin // SYSTEM (ECALL, EBREAK)
+        SYSTEM: begin // NO OP since this is an unprivilaged CPU
+		operands[0] = 0;
+		operands[1] = 0;
+		operands[2] = 0;
+		operands[3] = 0;
+		alu_code = ALU_INVALID;
+		mem_code = MEM_INVALID;
+		size_code = SIZE_INVALID;
+		jumper_code = JUMP_INVALID;
+		opcode_illegal = 0;
         end
-        default: opcode_illegal = 1;
+	default: begin 
+		operands[0] = 0;
+		operands[1] = 0;
+		operands[2] = 0;
+		operands[3] = 0;
+		alu_code = ALU_INVALID;
+		mem_code = MEM_INVALID;
+		size_code = SIZE_INVALID;
+		jumper_code = JUMP_INVALID;
+		opcode_illegal = 1;
+	end
     endcase
 end
 
 always @(posedge clk) begin
 
 	// WRITEBACK
-	x[writeback_reg] <= writeback_data
+	x[writeback_reg] <= writeback_data;
 	mem_holds[writeback_reg] <= 0;
 
-	// Check hazards
 	if (hazard) begin
 		blocking <= 1;
 	end
 	else begin
+		out_operands[0] <= operands[0];
+		out_operands[1] <= operands[1];
+		out_operands[2] <= operands[2];
+		out_operands[3] <= operands[3];
+		out_rd <= rd;
+
 		out_alu_code <= alu_code;
+		out_size_code <= size_hint;
+		out_mem_code <= mem_hint;
+
+		out_jumper_code <= jumper_code;
+		
 		blocking <= 0;
-	end	
+	end
 end
+
+
+// ########## HELPER FUNCTIONS ##########
 
 function [$clog(ALU_CODES_COUNT)-1:0] OP_alu_code(input [2:0] funct3, input [6:0] funct7);
 	begin
@@ -258,26 +326,40 @@ function [XLEN-1:0] OP_IMM_alu_code(input [2:0] funct3, input I_shift_arith);
 	end
 endfunction
 
-function [2:0] LOAD_size_hint(input [2:0] funct3);
+function [2:0] LOAD_size_code(input [2:0] funct3);
 	begin
 		case (funct3)
-			0: LOAD_size_hint = SIZE_HINT_BYTE;
-			1: LOAD_size_hint = SIZE_HINT_HALF;
-			2: LOAD_size_hint = SIZE_HINT_WORD;
-			4: LOAD_size_hint = SIZE_HINT_UBYTE;
-			5: LOAD_size_hint = SIZE_HINT_UHALF;
-			default: LOAD_size_hint = SIZE_HINT_INVALID;
+			0: LOAD_size_code = SIZE_BYTE;
+			1: LOAD_size_code = SIZE_HALF;
+			2: LOAD_size_code = SIZE_WORD;
+			4: LOAD_size_code = SIZE_UBYTE;
+			5: LOAD_size_code = SIZE_UHALF;
+			default: LOAD_size_code = SIZE_INVALID;
 		endcase
 	end
 endfunction
 
-function [2:0] STORE_size_hint(input [2:0] funct3);
+function [2:0] STORE_size_code(input [2:0] funct3);
 	begin
 		case (funct3)
-			0: STORE_size_hint = SIZE_HINT_BYTE;
-			1: STORE_size_hint = SIZE_HINT_HALF;
-			2: STORE_size_hint = SIZE_HINT_WORD;
-			default: STORE_size_hint = SIZE_HINT_INVALID;
+			0: STORE_size_code = SIZE_BYTE;
+			1: STORE_size_code = SIZE_HALF;
+			2: STORE_size_code = SIZE_WORD;
+			default: STORE_size_code = SIZE_INVALID;
+		endcase
+	end
+endfunction
+
+function [$clog(JUMPER_CODES_COUNT)-1:0] BRANCH_jumper_code(input [2:0] funct3);
+	begin
+		case(funct3)
+			0: BRANCH_jumper_code = JUMP_EQ;
+			1: BRANCH_jumper_code = JUMP_NEQ;
+			4: BRANCH_jumper_code = JUMP_LT;
+			5: BRANCH_jumper_code = JUMP_GTE;
+			6: BRANCH_jumper_code = JUMP_U_LT;
+			7: BRANCH_jumper_code = JUMP_U_GTE;
+			default: BRANCH_jumper_code = JUMP_INVALID;
 		endcase
 	end
 endfunction
