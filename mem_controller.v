@@ -22,15 +22,14 @@ module mem_controller #(
 	input advance_queue,
 	input add_pending,
 
-	output reg [XLEN-1:0] out_data,
-	output reg [$clog(XREG_COUNT)-1:0] out_rd,
-	output reg [$clog(SIZE_CODE_COUNT)-1:0] out_size_code,
 	output reg queue_full,
-	output [QUEUE_ITEM_SIZE-1:0] next_request
+	output [QUEUE_ITEM_SIZE-1:0] next_request,
+	output nex_request_valid
 );
 
 reg [QUEUE_ITEM_SIZE-1:0] queue [MAX_QUEUE_SIZE-1:0];
 reg [$clog(MAX_QUEUE_SIZE)-1:0] head, tail;
+wire do_inc_head, do_inc_tail;
 reg [$clog(MAX_QUEUE_SIZE):0] count_in_queue, count_pending add_to_count_in_queue, add_to_count_pending;
 wire do_inc_count_in_queue, do_dec_count_in_queue, do_inc_count_pending, do_dec_count_pending;
 wire queue_size;
@@ -43,9 +42,13 @@ wire type;
 wire incoming_request_valid;
 
 
+assign next_request = queue[head];
+assign next_request_valid = queue_size != 0;
 
 assign incoming_request_valid = mem_code != MEM_INVALID;
 
+// figure out if the head needs to be incremented
+assign do_inc_head = advance_queue;
 // figure out how count_in_queue and count_pending should be modified
 // ie. do they increment by 1, 0, or -1?
 assign do_inc_count_in_queue = incoming_request_valid;
@@ -84,8 +87,17 @@ assign type = mem_code == MEM_STORE ? 1:0;
 assign incoming_request = {addr, size_code, payload, type};
 
 always @(posedge clk) begin
+	if(do_inc_head)
+		head <= head+1;
+
+	if(incoming_request_valid) begin
+		queue[tail] <= incoming_request;
+		tail <= tail+1; // always increments when an item is added to queue
+	end
+
 	count_in_queue <= count_in_queue + add_to_count_in_queue;
 	count_pending <= count_pending + add_to_count_pending;
+
 end
 
 endmodule
