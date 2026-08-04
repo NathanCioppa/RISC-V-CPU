@@ -10,8 +10,8 @@
 module mem_controller #(
 	parameter XLEN = 32,
 	parameter XREG_COUNT = 32,
-	parameter QUEUE_LEN = 8,
-	parameter QUEUE_ITEM_SIZE = (2*XLEN) + $clog(SIZE_CODES_COUNT) + 1
+	parameter MAX_QUEUE_SIZE = 8,
+	parameter QUEUE_ITEM_SIZE = (2*XLEN) + $clog(SIZE_CODES_COUNT)
 )(
 	input clk,
 
@@ -20,6 +20,7 @@ module mem_controller #(
 	input [$clog(SIZE_CODES_COUNT)-1:0] size_code,
 	input [XLEN-1:0] addr, store_payload,
 	input advance_queue,
+	input add_pending,
 
 	output reg [XLEN-1:0] out_data,
 	output reg [$clog(XREG_COUNT)-1:0] out_rd,
@@ -30,29 +31,39 @@ module mem_controller #(
 
 integer i;
 
-reg [QUEUE_LEN:0] queue_mark;
-reg [QUEUE_ITEM_SIZE-1:0] queue [QUEUE_LEN-1:0];
+reg [QUEUE_ITEM_SIZE-1:0] queue [MAX_QUEUE_SIZE-1:0];
+reg [$clog(MAX_QUEUE_SIZE)-1:0] head, tail;
+reg [$clog(MAX_QUEUE_SIZE):0] count_in_queue, count_pending;
+wire do_inc_count_in_queue, do_dec_count_in_queue, do_inc_count_pending, do_dec_count_pending;
+wire queue_size;
 
 wire [QUEUE_ITEM_SIZE-1:0] incoming_request;
 wire [XLEN-1:0] payload;
 wire [XLEN-$clog(XREG_COUNT):0] upper_payload, upper_store_payload;
 wire [$clog(XREG_COUNT):0] lower_payload, lower_store_payload;
 wire type;
+wire incoming_request_valid;
 
+
+
+assign incoming_request_valid = mem_code != MEM_INVALID;
+
+assign do_inc_count_in_queue = incoming_request_valid;
+assign do_dec_count_in_queue = advance_queue;
+assign do_inc_count_pending = add_pending;
+assign do_dec_count_pending = incoming_request_valid;
+assign queue_size = count_in_queue + count_pending;
+
+// decode inputs to format the payload field
 assign {upper_store_payload, lower_store_payload} = store_payload;
-
 assign upper_payload = upper_store_payload;
-always @(*) begin
-	case (mem_code) begin
-		MEM_STORE: lower_payload = lower_store_payload;
-		MEM_LOAD: lower_payload = { rd, 1'b1 };
-		default: lower_payload = { rd, 1'b0 };
-	endcase
-end
+assign lower_payload = mem_code == MEM_STORE ? lower_store_payload : rd;
 assign payload = { upper_payload, lower_payload };
 assign type = mem_code == MEM_STORE ? 1:0;
-
+//encode the incoming request as a Queue Item
 assign incoming_request = {addr, size_code, payload, type};
+
+
 
 endmodule
 
