@@ -27,17 +27,23 @@ module decoder #(
 
 	input [XLEN-1:0] alu_writeback_data,
 	input [$clog(XREG_COUNT)-1:0] alu_writeback_reg,
+	input do_alu_writeback;
 	input [XLEN-1:0] load_writeback_data,
 	input [$clog(XREG_COUNT)-1:0] load_writeback_reg,
+	input do_load_writeback;
 	input [XLEN-1:0] pc_writeback_data,
 	input do_pc_writeback,
+
+	input mem_controller_queue_full,
 	
 	output reg [XLEN-1:0] out_operands [3:0],
 	output reg [XLEN-1:0] out_rd,
 	output reg [$clog(ALU_CODES_COUNT)-1:0] out_alu_code,
 	output reg [1:0] out_mem_code,
-	output reg [2:0] out_size_code
+	output reg [2:0] out_size_code,
 	output reg [$clog(JUMPER_CODES_COUNT)-1:0] out_jumper_code,
+	
+	output reg out_add_to_mem_controller_queue
 );
 
 reg [XLEN-1:0] x [XREG_COUNT-1:0]; // CPU Registers, the RISC-V x-registers
@@ -47,11 +53,12 @@ reg blocking;
 wire opcode [6:0];
 wire [$clog(XREG_COUNT)-1:0] rd, rs1, rs2;
 wire [XLEN-1:0] rs1_data, rs2_data;
-wire hazard, hazard_rs1, hazard_rs2, hazard_rd;
+wire hazard, hazard_rs1, hazard_rs2, hazard_rd, hazard_mem;
 wire R_hazard, I_hazard, S_hazard, U_hazard;
 wire [XLEN-1:0] I_imm, S_imm, U_imm, J_imm, B_imm;
 wire I_shift_arith;
 wire opcode_illegal;
+wire is_mem_instruction;
 
 reg [XLEN-1:0] operands [3:0];
 reg [$clog(ALU_CODES_COUNT)-1:0] alu_code;
@@ -75,11 +82,18 @@ assign hazard_rs1 = rs1 ? mem_holds[rs1] : 0;
 assign hazard_rs2 = rs2 ? mem_holds[rs2] : 0;
 assign hazard_rd = rd ? mem_holds[rd] : 0;
 
-// hazards and immediates can be determined based off of just the format
+// these hazards can be determined off of format alone, as the depend only on
+// register locations encoded in the instruction
 assign R_hazard = hazard_rs1 || hazard_rs2 || hazard_rd;
 assign I_hazard = hazard_rs1 || hazard_rd;
 assign S_hazard = hazard_rs1 || hazard_rs2;
+assign B_hazard = S_hazard;
 assign U_hazard = hazard_rd;
+assign J_hazard = U_hazard;
+
+// need a hazard for mem instructions to check since they may need to block if
+// the controller's queue is full
+assign MEM_hazard = mem_controller_queue_full;
 
 // _imm wires are set exactly as described in RISC-V Specifications for clarity
 // (thats why for example I_imm doesnt just have instruction[30:20] after sign extension even though it is equivilent
@@ -91,6 +105,7 @@ assign U_imm = { {(XLEN-31){instruction[31]}}, instruction[30:20], instruction[1
 assign J_imm = { {(XLEN-20){instruction[31]}}, instruction[19:12], instruction[20], instruction[30:25], instruction[24:21], 1'b0 }
 
 assign I_shift_arith = instruction[30];
+assign is_mem_instruction = opcode == LOAD || opcode == STORE;
 
 always @(*) begin
 case (opcode)
@@ -103,6 +118,7 @@ case (opcode)
 		mem_code = MEM_INVALID;
 		size_code = SIZE_INVALID;
 		jumper_code = JUMP_INVALID;
+		hazard = U_hazard;
 		opcode_illegal = 0;
         end
         AUIPC: begin
@@ -114,6 +130,7 @@ case (opcode)
 		mem_code = MEM_INVALID;
 		size_code = SIZE_INVALD;
 		jumper_code = JUMP_INVALID;
+		hazard = U_hazard;
 		opcode_illegal = 0;
         end
         JAL: begin
@@ -125,6 +142,7 @@ case (opcode)
 		mem_code = MEM_INVALID;
 		size_code = SIZE_INVALD;
 		jumper_code = JUMPER_UNCOND;
+		hazard = J_hazard;
 		opcode_illegal = 0;
         end
         JALR: begin
@@ -136,6 +154,7 @@ case (opcode)
 		mem_code = MEM_INVALID;
 		size_code = SIZE_INVALD;
 		jumper_code = JUMP_UNCOND;
+		hazard = I_hazard;
 		opcode_illegal = 0;
         end
         BRANCH: begin 
@@ -147,6 +166,7 @@ case (opcode)
 		mem_code = MEM_INVALID;
 		size_code = SIZE_INVALD;
 		jumper_code = BRANCH_jumper_code(funct3);
+		hazard = B_hazard;
 		opcode_illegal = 0;
         end
         LOAD: begin
@@ -158,6 +178,7 @@ case (opcode)
 		mem_code = MEM_LOAD;
 		size_code = LOAD_size_hint(funct3);
 		jumper_code = JUMP_INVALID;
+		hazard = I_hazard || MEM_hazard;
 		opcode_illegal = 0;
         end
         STORE: begin 
@@ -169,6 +190,7 @@ case (opcode)
 		mem_code = MEM_STORE;
 		size_code = STORE_size_hint(funct3);
 		jumper_code = JUMP_INVALID;
+		hazard = S_hazard || MEM_hazard;
 		opcode_illegal = 0;
         end
         OP_IMM: begin 
@@ -180,6 +202,7 @@ case (opcode)
 		mem_code = MEM_INVALID;
 		size_code = SIZE_INVALID;
 		jumper_code = JUMP_INVALID;
+		hazard = I_hazard;
 		opcode_illegal = 0;
         end
         OP: begin
@@ -191,6 +214,7 @@ case (opcode)
 		mem_code = MEM_INVALID;
 		size_code = SIZE_INVALID;
 		jumper_code = JUMP_INVALID;
+		hazard = R_hazard;
 		opcode_illegal = 0;
         end
         FENCE: begin // NO OP since this is a single core CPU
@@ -202,6 +226,7 @@ case (opcode)
 		mem_code = MEM_INVALID;
 		size_code = SIZE_INVALID;
 		jumper_code = JUMP_INVALID;
+		hazard = 0;
 		opcode_illegal = 0;
         end
         SYSTEM: begin // NO OP since this is an unprivilaged CPU
@@ -213,6 +238,7 @@ case (opcode)
 		mem_code = MEM_INVALID;
 		size_code = SIZE_INVALID;
 		jumper_code = JUMP_INVALID;
+		hazard = 0;
 		opcode_illegal = 0;
         end
 	default: begin 
@@ -224,6 +250,7 @@ case (opcode)
 		mem_code = MEM_INVALID;
 		size_code = SIZE_INVALID;
 		jumper_code = JUMP_INVALID;
+		hazard = 0;
 		opcode_illegal = 1;
 	end
     endcase
@@ -232,10 +259,35 @@ end
 always @(posedge clk) begin
 
 	// WRITEBACK
-	x[writeback_reg] <= writeback_data;
-	mem_holds[writeback_reg] <= 0;
+	if(do_alu_writeback) begin
+		x[alu_writeback_reg] <= alu_writeback_data;
+		mem_holds[alu_writeback_reg] <= 0;
+	end
+	if(do_load_writeback) begin
+		x[load_writeback_reg] <= load_writeback_data;
+		mem_holds[load_writeback_reg] <= 0;
+	end
+	if(do_pc_writeback) begin
+		// wait on this until logic is done for regular pc increments
+		// and jumps. 
+	end
 
-	if (hazard) begin
+	// SEND INSTRUCTION INTO PIPELINE
+	if (hazard) begin // start blocking and send no-op
+		out_operands[0] <= 0;
+		out_operands[1] <= 0;
+		out_operands[2] <= 0;
+		out_operands[3] <= 0;
+		out_rd <= 0;
+
+		out_alu_code <= ALU_INVALID;
+		out_size_code <= SIZE_INVALID;
+		out_mem_code <= MEM_INVALID;
+
+		out_jumper_code <= JUMP_INVALID;
+
+		out_add_to_mem_controller_queue <= 0;
+		
 		blocking <= 1;
 	end
 	else begin
@@ -250,6 +302,8 @@ always @(posedge clk) begin
 		out_mem_code <= mem_hint;
 
 		out_jumper_code <= jumper_code;
+		
+		out_add_to_mem_controller_queue <= is_mem_instruction;
 		
 		blocking <= 0;
 	end

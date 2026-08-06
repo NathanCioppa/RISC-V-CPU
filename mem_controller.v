@@ -11,7 +11,7 @@ module mem_controller #(
 	parameter XLEN = 32,
 	parameter XREG_COUNT = 32,
 	parameter MAX_QUEUE_SIZE = 8,
-	parameter QUEUE_ITEM_SIZE = (2*XLEN) + $clog(SIZE_CODES_COUNT)
+	parameter REQUEST_ITEM_SIZE = (2*XLEN) + $clog(SIZE_CODES_COUNT)
 )(
 	input clk,
 
@@ -19,22 +19,22 @@ module mem_controller #(
 	input [$clog(MEM_CODES_COUNT)-1:0] mem_code,
 	input [$clog(SIZE_CODES_COUNT)-1:0] size_code,
 	input [XLEN-1:0] addr, store_payload,
-	input advance_queue,
+	input request_read,
 	input add_pending,
 
 	output reg queue_full,
-	output [QUEUE_ITEM_SIZE-1:0] next_request,
-	output nex_request_valid
+	output [REQUEST_ITEM_SIZE-1:0] out_request,
+	output out_request_valid
 );
 
-reg [QUEUE_ITEM_SIZE-1:0] queue [MAX_QUEUE_SIZE-1:0];
+reg [REQUEST_ITEM_SIZE-1:0] queue [MAX_QUEUE_SIZE-1:0];
 reg [$clog(MAX_QUEUE_SIZE)-1:0] head, tail;
 wire do_inc_head, do_inc_tail;
 reg [$clog(MAX_QUEUE_SIZE):0] count_in_queue, count_pending add_to_count_in_queue, add_to_count_pending;
 wire do_inc_count_in_queue, do_dec_count_in_queue, do_inc_count_pending, do_dec_count_pending;
 wire queue_size;
 
-wire [QUEUE_ITEM_SIZE-1:0] incoming_request;
+wire [REQUEST_ITEM_SIZE-1:0] incoming_request;
 wire [XLEN-1:0] payload;
 wire [XLEN-$clog(XREG_COUNT):0] upper_payload, upper_store_payload;
 wire [$clog(XREG_COUNT):0] lower_payload, lower_store_payload;
@@ -42,20 +42,22 @@ wire type;
 wire incoming_request_valid;
 
 
-assign next_request = queue[head];
-assign next_request_valid = queue_size != 0;
+assign queue_size = count_in_queue + count_pending;
+assign queue_full = queue_size >= MAX_QUEUE_SIZE;
+
+assign out_request = queue[head];
+assign out_request_valid = count_in_queue != 0;
 
 assign incoming_request_valid = mem_code != MEM_INVALID;
 
 // figure out if the head needs to be incremented
-assign do_inc_head = advance_queue;
+assign do_inc_head = request_read;
 // figure out how count_in_queue and count_pending should be modified
 // ie. do they increment by 1, 0, or -1?
 assign do_inc_count_in_queue = incoming_request_valid;
-assign do_dec_count_in_queue = advance_queue;
+assign do_dec_count_in_queue = request_read;
 assign do_inc_count_pending = add_pending;
 assign do_dec_count_pending = incoming_request_valid;
-assign queue_size = count_in_queue + count_pending;
 // At the clock edge, the values of add_to_count_in_queue and
 //  add_to_count_pending will always be added to count_in_queue and 
 //  count_pending respectively.
@@ -76,6 +78,7 @@ always @(*) begin
 	else
 		add_to_count_pending = 0;
 end
+
 
 // decode inputs to format the payload field
 assign {upper_store_payload, lower_store_payload} = store_payload;
