@@ -17,11 +17,15 @@ module alu #(
 	input [$clog(MEM_CODES_COUNT)-1:0] mem_code,
 	input [$clog(SIZE_CODES_COUNT)-1:0] size_code, 
 
+	input flush,
+
 	output reg [XLEN-1:0] out_result,
 	output reg [$clog(XREG_COUNT)-1:0] out_rd,
 	output reg out_do_wb,
 	output reg [$clog(SIZE_CODES_COUNT)-1:0] out_size_code, 
-	output reg [$clog(MEM_CODES_COUNT)-1:0] out_mem_code
+	output reg [$clog(MEM_CODES_COUNT)-1:0] out_mem_code,
+
+	output reg force_rd_free // forces rd to be freed regardless of out_do_wb state
 ); 
 
 wire do_wb;
@@ -44,9 +48,10 @@ always @(posedge clk) begin
 	endcase
 
 	out_rd <= rd;
-	out_do_wb <= do_wb;
+	out_force_rd_free <= flush;
+	out_do_wb <= flush ? 0 : do_wb;
 	out_size_code <= size_code;
-	out_mem_code <= mem_code;
+	out_mem_code <= flush ? 0 : mem_code;
 end
 
 endmodule

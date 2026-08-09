@@ -5,6 +5,7 @@
 `include "mem_codes.vh"
 `include "size_codes.vh"
 
+localparam OPCODE_LEN = 7;
 localparam OP = 7'b0110011; // ADD, SUB, SLL, SLT, SLTU, XOR, SRL, SRA, OR, AND
 localparam OP_IMM = 7'b0010011; // ADDI, SLTI, SLTIU, XORI, ORI, ANDI, SLLI, SRLI, SRAI
 localparam LOAD = 7'b0000011; // LB, LH, LW, LBU, LHU
@@ -23,7 +24,7 @@ module decoder #(
 	parameter INSTRUCTION_LEN = 32
 )(
 	input clk,
-	input [INSTRUCTION_LEN-1:0] instruction,
+	input [INSTRUCTION_LEN-1:0] instruction_in,
 
 	input [XLEN-1:0] alu_writeback_data,
 	input [$clog(XREG_COUNT)-1:0] alu_writeback_reg,
@@ -35,6 +36,8 @@ module decoder #(
 	input do_pc_writeback,
 
 	input mem_controller_queue_full,
+	input flush_for_jump,
+	input force_alu_rd_free,
 	
 	output reg [XLEN-1:0] out_operands [3:0],
 	output reg [XLEN-1:0] out_rd,
@@ -49,6 +52,8 @@ module decoder #(
 reg [XLEN-1:0] x [XREG_COUNT-1:0]; // CPU Registers, the RISC-V x-registers
 reg [XREG_COUNT-1:0] mem_holds;
 reg blocking;
+wire [INSTRUCTION_LEN-1:0] NO_OP;
+wire instruction;
 
 wire opcode [6:0];
 wire [$clog(XREG_COUNT)-1:0] rd, rs1, rs2;
@@ -67,6 +72,9 @@ reg [2:0] size_code;
 reg [$clog(JUMPER_CODES_COUNT)-1:0] jumper_code;
 
 
+
+assign instruction_NO_OP = { {(INSTRUCTION_LEN-OPCODE_LEN){1'b0}}, OP_IMM };
+assign instruction = stall ? instruction_NO_OP : instruction_in;
 
 assign opcode = instruction[6:0];
 assign rd = instruction[11:7];
@@ -263,6 +271,8 @@ always @(posedge clk) begin
 		x[alu_writeback_reg] <= alu_writeback_data;
 		mem_holds[alu_writeback_reg] <= 0;
 	end
+	else if(force_alu_rd_free)
+		mem_holds[alu_writeback_reg] <= 0;
 	if(do_load_writeback) begin
 		x[load_writeback_reg] <= load_writeback_data;
 		mem_holds[load_writeback_reg] <= 0;
@@ -273,7 +283,7 @@ always @(posedge clk) begin
 	end
 
 	// SEND INSTRUCTION INTO PIPELINE
-	if (hazard) begin // start blocking and send no-op
+	if (hazard || flush_for_jump) begin // start blocking and send no-op
 		out_operands[0] <= 0;
 		out_operands[1] <= 0;
 		out_operands[2] <= 0;
@@ -304,7 +314,8 @@ always @(posedge clk) begin
 		out_jumper_code <= jumper_code;
 		
 		out_add_to_mem_controller_queue <= is_mem_instruction;
-		
+	
+		mem_holds[rd] <= 1;	
 		blocking <= 0;
 	end
 end

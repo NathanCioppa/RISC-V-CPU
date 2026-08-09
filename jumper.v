@@ -10,6 +10,7 @@ module jumper #(
 	input [XLEN-1:0] add_lhs, add_rhs,
 	input [XLEN-1:0] cmp_lhs, cmp_rhs,
 	input [$clog(JUMPER_CODES_COUNT)-1:0] jumper_code,
+	input flush_settling,
 
 	output reg [XLEN-1:0] out_pc,
 	output reg result_valid
@@ -29,7 +30,7 @@ assign do_assignment = (jumper_code == JUMP_UNCOND)
 	|| ( (jumper_code == JUMP_U_GTE) && (cmp_lhs >= cmp_rhs) );
 
 always @(posedge clk) begin
-	if(do_assignment) begin
+	if(do_assignment && !flush_settling) begin
 		out_pc <= sum;
 		result_valid <= 1;
 	end
