@@ -25,6 +25,7 @@ module decoder #(
 )(
 	input clk,
 	input [INSTRUCTION_LEN-1:0] instruction_in,
+	input next_inst_ready,
 
 	input [XLEN-1:0] alu_writeback_data,
 	input [$clog(XREG_COUNT)-1:0] alu_writeback_reg,
@@ -45,13 +46,13 @@ module decoder #(
 	output reg [1:0] out_mem_code,
 	output reg [2:0] out_size_code,
 	output reg [$clog(JUMPER_CODES_COUNT)-1:0] out_jumper_code,
+	output out_ready_for_next_inst,
 	
 	output reg out_add_to_mem_controller_queue
 );
 
 reg [XLEN-1:0] x [XREG_COUNT-1:0]; // CPU Registers, the RISC-V x-registers
 reg [XREG_COUNT-1:0] mem_holds;
-reg blocking;
 wire [INSTRUCTION_LEN-1:0] NO_OP;
 wire [INSTRUCTION_LEN-1:0] real_instruction, effective_instruction;
 wire [$clog(XREG_COUNT)-1:0] real_rd, effective_rd, real_rs1, effective_rs1, real_rs2, effective_rs2;
@@ -60,7 +61,7 @@ wire [OPCODE_LEN-1:0] real_opcode, effective_opcode;
 
 wire hazard_rs1, hazard_rs2, hazard_rd;
 wire R_hazard, I_hazard, S_hazard, U_hazard, J_hazard, B_hazard;
-wire HAZ_data_dep, HAZ_mem, HAZ_bad_branch;
+wire HAZ_data_dep, HAZ_mem, HAZ_bad_branch, HAZ_inst_already_execed;
 
 wire [XLEN-1:0] I_imm, S_imm, U_imm, J_imm, B_imm;
 wire I_shift_arith;
@@ -74,9 +75,14 @@ wire [$clog(SIZE_CODES_COUNT)-1:0] size_code;
 wire [$clog(JUMPER_CODES_COUNT)-1:0] jumper_code;
 wire add_to_mem_controller_queue;
 
+reg inst_dead;
+wire kill_inst;
+
+
 
 assign instruction_NO_OP = { {(INSTRUCTION_LEN-OPCODE_LEN){1'b0}}, OP_IMM };
-assign stall = HAZ_data_dep || HAZ_mem || HAZ_bad_branch;
+assign stall = HAZ_data_dep || HAZ_mem || HAZ_bad_branch || HAZ_inst_already_execed;
+assign inst_did_exec = !(HAZ_data_dep || HAZ_mem || HAZ_bad_branch);
 assign real_instruction = instruction_in;
 assign effective_instruction = stall ? instruction_NO_OP : real_instruction;
 
@@ -108,6 +114,7 @@ assign is_mem_instruction = opcode == LOAD || opcode == STORE;
 // assign the actual hazards that are in effect based on the real instruction
 assign HAZ_mem = is_mem_instruction && mem_controller_closed;
 assign HAZ_bad_branch = jumper_did_branch;
+assign HAZ_inst_invalid = !valid_instruction_in;
 always @(*) begin
 	case (real_opcode)
 		OP : HAZ_data_dep = R_hazard;
@@ -120,6 +127,9 @@ always @(*) begin
 	endcase
 end
 
+assign kill_inst = !(HAZ_data_dep || HAZ_mem || HAZ_bad_branch);
+assign out_ready_for_next_inst = kill_inst || inst_dead;
+assign HAZ_inst_already_execed = inst_dead;
 
 // _imm wires are set exactly as described in RISC-V Specifications for clarity
 // (thats why for example I_imm doesnt just have instruction[30:20] after sign extension even though it is equivilent
@@ -294,13 +304,9 @@ always @(posedge clk) begin
 		x[load_writeback_reg] <= load_writeback_data;
 		mem_holds[load_writeback_reg] <= 0;
 	end
-	if(do_pc_writeback) begin
+	if(do_pc_writeback)
 		pc <= pc_writeback_data;
-	end
-	else begin
-		// regular increment pc logic
-	end
-
+		
 	// SEND INSTRUCTION INTO PIPELINE
 	out_operands[0] <= operands[0];
 	out_operands[1] <= operands[1];
@@ -316,7 +322,15 @@ always @(posedge clk) begin
 		
 	out_add_to_mem_controller_queue <= add_to_mem_controller_queue;
 	
-	mem_holds[effective_rd] <= 1;	
+	mem_holds[effective_rd] <= 1;
+	
+	if(out_ready_for_next_inst && next_inst_ready) begin
+		inst_dead <= 0;
+		if(!do_pc_writeback)
+			pc <= pc+1; // do regular increment if a jump is not being written
+	end
+	else if(kill_inst)
+		inst_dead <= 1;
 end
 
 
