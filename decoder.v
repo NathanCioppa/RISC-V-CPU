@@ -47,6 +47,7 @@ module decoder #(
 	output reg [2:0] out_size_code,
 	output reg [$clog(JUMPER_CODES_COUNT)-1:0] out_jumper_code,
 	output out_ready_for_next_inst,
+	output reg out_do_forward,
 	
 	output reg out_add_to_mem_controller_queue
 );
@@ -62,6 +63,7 @@ wire [OPCODE_LEN-1:0] real_opcode, effective_opcode;
 wire hazard_rs1, hazard_rs2, hazard_rd;
 wire R_hazard, I_hazard, S_hazard, U_hazard, J_hazard, B_hazard;
 wire HAZ_data_dep, HAZ_mem, HAZ_bad_branch, HAZ_inst_already_execed;
+wire can_forward, do_forward;
 
 wire [XLEN-1:0] I_imm, S_imm, U_imm, J_imm, B_imm;
 wire I_shift_arith;
@@ -95,10 +97,13 @@ assign effective_rs2 = effective_instruction[24:20];
 assign rs1_data = effective_rs1 ? x[real_rs1] : 0;
 assign rs2_data = effective_rs2 ? x[real_rs2] : 0;
 
+assign can_forward = real_rd == out_rd;
+assign do_forward = can_forward && out_rd;
+
 // ignore any hold placed on x0 when checking for potential hazards
 assign hazard_rs1 = real_rs1 ? mem_holds[real_rs1] : 0;
 assign hazard_rs2 = real_rs2 ? mem_holds[real_rs2] : 0;
-assign hazard_rd = real_rd ? mem_holds[real_rd] : 0;
+assign hazard_rd = !can_forward && (real_rd ? mem_holds[real_rd] : 0);
 
 // these potential hazards can be determined off of format alone, as the depend only on
 // register locations encoded in the instruction
@@ -231,7 +236,7 @@ case (effective_opcode)
         end
         OP_IMM: begin 
 		operands[0] = rs1_data;
-		operands[1] = funct3 == 1 || funct3 == 5 ? I_imm[4:0] : I_imm;
+		operands[1] = (funct3 == 1 || funct3 == 5) ? I_imm[4:0] : I_imm;
 		operands[2] = 0;
 		operands[3] = 0;
 		alu_code = OP_IMM_alu_code(funct3, I_shift_arith);
@@ -331,6 +336,8 @@ always @(posedge clk) begin
 	end
 	else if(kill_inst)
 		inst_dead <= 1;
+
+	out_do_forward <= do_forward;
 end
 
 
