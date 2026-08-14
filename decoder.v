@@ -64,6 +64,7 @@ wire hazard_rs1, hazard_rs2, hazard_rd;
 wire R_hazard, I_hazard, S_hazard, U_hazard, J_hazard, B_hazard;
 wire HAZ_data_dep, HAZ_mem, HAZ_bad_branch, HAZ_inst_already_execed;
 wire can_forward, do_forward;
+wire inst_xreg_writeback_capable;
 
 wire [XLEN-1:0] I_imm, S_imm, U_imm, J_imm, B_imm;
 wire I_shift_arith;
@@ -89,7 +90,7 @@ assign real_instruction = instruction_in;
 assign effective_instruction = stall ? instruction_NO_OP : real_instruction;
 
 assign effective_opcode = effective_instruction[6:0];
-assign effective_rd = effective_instruction[11:7];
+assign effective_rd = inst_xreg_writeback_capable ? effective_instruction[11:7] : 0;
 assign effective_rs1 = effective_instruction[19:15];
 assign effective_rs2 = effective_instruction[24:20];
 
@@ -129,6 +130,11 @@ always @(*) begin
 		LUI, AUIPC: HAZ_data_dep = U_hazard;
 		JAL : HAZ_data_dep = J_hazard;
 		default : HAZ_data_dep = 0;
+	endcase
+
+	case (effective_opcode)
+		STORE, BRANCH: inst_xreg_writeback_capable = 0;
+		default: inst_xreg_writeback_capable = 1;
 	endcase
 end
 
