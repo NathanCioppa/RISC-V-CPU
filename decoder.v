@@ -64,7 +64,7 @@ wire hazard_rs1, hazard_rs2, hazard_rd;
 wire R_hazard, I_hazard, S_hazard, U_hazard, J_hazard, B_hazard;
 wire HAZ_data_dep, HAZ_mem, HAZ_bad_branch, HAZ_inst_already_execed;
 wire can_forward, do_forward;
-wire inst_xreg_writeback_capable;
+wire inst_xreg_writeback_capable, inst_uses_rs1, inst_uses_rs2; // TODO ints_uses signals are not assigned, implement them
 
 wire [XLEN-1:0] I_imm, S_imm, U_imm, J_imm, B_imm;
 wire I_shift_arith;
@@ -91,14 +91,14 @@ assign effective_instruction = stall ? instruction_NO_OP : real_instruction;
 
 assign effective_opcode = effective_instruction[6:0];
 assign effective_rd = inst_xreg_writeback_capable ? effective_instruction[11:7] : 0;
-assign effective_rs1 = effective_instruction[19:15];
-assign effective_rs2 = effective_instruction[24:20];
+assign effective_rs1 = inst_uses_rs1 ? effective_instruction[19:15] : 0;
+assign effective_rs2 = inst_uses_rs2 ? effective_instruction[24:20] : 0;
 
 // x0 is hardwired to always output 0 when read
 assign rs1_data = effective_rs1 ? x[real_rs1] : 0;
 assign rs2_data = effective_rs2 ? x[real_rs2] : 0;
 
-assign can_forward = real_rd == out_rd;
+assign can_forward = do_alu_writeback && (effective_rs1 == out_rd || effective_rs2 == out_rd);
 assign do_forward = can_forward && out_rd;
 
 // ignore any hold placed on x0 when checking for potential hazards
@@ -136,6 +136,7 @@ always @(*) begin
 		STORE, BRANCH: inst_xreg_writeback_capable = 0;
 		default: inst_xreg_writeback_capable = 1;
 	endcase
+
 end
 
 assign kill_inst = !(HAZ_data_dep || HAZ_mem || HAZ_bad_branch);
