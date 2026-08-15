@@ -13,12 +13,10 @@ module alu #(
 	
 	input [$clog(ALU_CODES_COUNT)-1:0] alu_code,
 	input [XLEN-1:0] op_lhs, op_rhs,
-	input [$clog(XLEN)-1:0] xrs_lhs, xrs_rhs,
 	input [$clog(XREG_COUNT)-1:0] rd,
 	input [$clog(MEM_CODES_COUNT)-1:0] mem_code,
 	input [$clog(SIZE_CODES_COUNT)-1:0] size_code, 
 
-	input do_forward,
 	input flush,
 
 	output reg [XLEN-1:0] out_result,
@@ -31,25 +29,22 @@ module alu #(
 ); 
 
 wire do_wb;
-wire [$clog(XLEN)-1:0] effective_op_lhs, effective_op_rhs;
 
 assign do_wb = (alu_code != ALU_INVALID) && (mem_code == MEM_INVALID);
-assign effective_op_lhs = (do_forward && (xrs_lhs == out_rd)) ? out_result ? op_lhs;
-assign effective_op_rhs = (do_forward && (xrs_rhs == out_rd)) ? out_result ? op_rhs;
 
 always @(posedge clk) begin
 	case (alu_code)
-		ALU_ADD: result <= effective_op_lhs + effective_op_rhs;
-		ALU_SUB: result <= effective_op_lhs - effective_op_rhs;
-		ALU_AND: result <= effective_op_lhs & effective_op_rhs; 
-		ALU_OR: result <= effective_op_lhs | effective_op_rhs;
-		ALU_XOR: result <= effective_op_lhs ^ effective_op_rhs;
-		ALU_SLL: result <= effective_op_lhs << effective_op_rhs;
-		ALU_SRL: result <= effective_op_lhs >> alu_rsh;
-		ALU_SRA: result <= $signed(effective_op_lhs) >>> effective_op_rhs;
-		ALU_SLT: result <= $signed(effective_op_lhs) < $signed(effective_op_rhs)? 1:0;
-		ALU_SLTU: result <= effective_op_lhs > effective_op_rhs ? 1:0;
-		ALU_AUI: result <= effective_op_lhs + (effective_op_rhs << 12);
+		ALU_ADD: result <= op_lhs + op_rhs;
+		ALU_SUB: result <= op_lhs - op_rhs;
+		ALU_AND: result <= op_lhs & op_rhs; 
+		ALU_OR: result <= op_lhs | op_rhs;
+		ALU_XOR: result <= op_lhs ^ op_rhs;
+		ALU_SLL: result <= op_lhs << op_rhs;
+		ALU_SRL: result <= op_lhs >> alu_rsh;
+		ALU_SRA: result <= $signed(op_lhs) >>> op_rhs;
+		ALU_SLT: result <= $signed(op_lhs) < $signed(op_rhs)? 1:0;
+		ALU_SLTU: result <= op_lhs > op_rhs ? 1:0;
+		ALU_AUI: result <= op_lhs + (op_rhs << 12);
 	endcase
 
 	out_rd <= rd;

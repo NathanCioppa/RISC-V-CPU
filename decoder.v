@@ -18,6 +18,15 @@ localparam BRANCH = 7'b1100011; // BEQ, BNE, BLT, BGE, BLTU, BGEU
 localparam FENCE = 7'b0001111;
 localparam SYSTEM = 7'b1110011; // ECALL, EBREAK 
 
+localparam FORMATS_COUNT = 7;
+localparam INVALID_FORMAT = 0;
+localparam R_FORMAT = 1;
+localparam I_FORMAT = 2;
+localparam S_FORMAT = 3;
+localparam B_FORMAT = 4;
+localparam U_FORMAT = 5;
+localparam J_FORMAT = 6;
+
 module decoder #(
 	parameter XREG_COUNT = 32, 
 	parameter XLEN = 32,
@@ -64,7 +73,11 @@ wire hazard_rs1, hazard_rs2, hazard_rd;
 wire R_hazard, I_hazard, S_hazard, U_hazard, J_hazard, B_hazard;
 wire HAZ_data_dep, HAZ_mem, HAZ_bad_branch, HAZ_inst_already_execed;
 wire can_forward, do_forward;
-wire inst_xreg_writeback_capable, inst_uses_rs1, inst_uses_rs2; // TODO ints_uses signals are not assigned, implement them
+wire inst_uses_rd, inst_uses_rs1, inst_uses_rs2; 
+wire alu_can_forward, rs1_hold_override, rs2_hold_override;
+wire do_forward_rs1, do_forward_rs2;
+
+wire [$clog(FORMATS_COUNT)-1:0] effective_format;
 
 wire [XLEN-1:0] I_imm, S_imm, U_imm, J_imm, B_imm;
 wire I_shift_arith;
@@ -72,6 +85,7 @@ wire opcode_illegal;
 wire is_mem_instruction;
 
 wire [XLEN-1:0] operands [3:0];
+wire [$clog(XLEN)-1:0] xrs_operands [1:0];
 wire [$clog(ALU_CODES_COUNT)-1:0] alu_code;
 wire [$clog(MEM_CODES_COUNT)-1:0] mem_code;
 wire [$clog(SIZE_CODES_COUNT)-1:0] size_code;
@@ -90,21 +104,29 @@ assign real_instruction = instruction_in;
 assign effective_instruction = stall ? instruction_NO_OP : real_instruction;
 
 assign effective_opcode = effective_instruction[6:0];
-assign effective_rd = inst_xreg_writeback_capable ? effective_instruction[11:7] : 0;
+assign effective_rd = inst_uses_rd ? effective_instruction[11:7] : 0;
 assign effective_rs1 = inst_uses_rs1 ? effective_instruction[19:15] : 0;
 assign effective_rs2 = inst_uses_rs2 ? effective_instruction[24:20] : 0;
 
 // x0 is hardwired to always output 0 when read
-assign rs1_data = effective_rs1 ? x[real_rs1] : 0;
-assign rs2_data = effective_rs2 ? x[real_rs2] : 0;
+// use alu_writeback_data when forwarding
+assign rs1_data = do_forward_rs1 ? alu_writeback_data : (effective_rs1 ? x[effective_rs1] : 0);
+assign rs2_data = do_forward_rs2 ? alu_writeback_data : (effective_rs2 ? x[effective_rs2] : 0);
 
-assign can_forward = do_alu_writeback && (effective_rs1 == out_rd || effective_rs2 == out_rd);
-assign do_forward = can_forward && out_rd;
+// forwarding cannot happen on x0 or if the ALU is not about to do a writeback with its current data 
+assign alu_can_forward = out_rd && do_alu_writeback;
+// set overrides to allow forwarding
+assign hazard_rs1_hold_override = alu_can_forward && (real_rs1 == alu_writeback_reg);
+assign hazard_rs2_hold_override = alu_can_forward && (real_rs2 == alu_writeback_reg);
 
-// ignore any hold placed on x0 when checking for potential hazards
-assign hazard_rs1 = real_rs1 ? mem_holds[real_rs1] : 0;
-assign hazard_rs2 = real_rs2 ? mem_holds[real_rs2] : 0;
-assign hazard_rd = !can_forward && (real_rd ? mem_holds[real_rd] : 0);
+assign do_forward_rs1 = alu_can_forward && (effective_rs1 == out_rd);
+assign do_forward_rs2 = alu_can_forward && (effective_rs2 == out_rd);
+
+// ignore any hold placed on x0 when checking for potential hazards.
+// overrides stop hazards from being set when they can be fixed by forwarding.
+assign hazard_rs1 = real_rs1 && mem_holds[real_rs1] && !hazard_rs1_hold_override;
+assign hazard_rs2 = real_rs2 && mem_holds[real_rs2] && !hazard_rs2_hold_override;
+assign hazard_rd = real_rd ? mem_holds[real_rd] : 0;
 
 // these potential hazards can be determined off of format alone, as the depend only on
 // register locations encoded in the instruction
@@ -131,12 +153,6 @@ always @(*) begin
 		JAL : HAZ_data_dep = J_hazard;
 		default : HAZ_data_dep = 0;
 	endcase
-
-	case (effective_opcode)
-		STORE, BRANCH: inst_xreg_writeback_capable = 0;
-		default: inst_xreg_writeback_capable = 1;
-	endcase
-
 end
 
 assign kill_inst = !(HAZ_data_dep || HAZ_mem || HAZ_bad_branch);
@@ -154,6 +170,54 @@ assign J_imm = { {(XLEN-20){effective_instruction[31]}}, effective_instruction[1
 
 assign I_shift_arith = effective_instruction[30];
 
+always @(*) begin
+	// format can be determined off of opcode alone
+	case (effective_opcode)
+		OP : effective_format = R_FORMAT;
+		OP_IMM, LOAD, JALR, FENCE, SYSTEM : effective_format = I_FORMAT;
+		STORE : effective_format = S_FORMAT;
+		BRANCH : effective_format = B_FORMAT;
+		LUI, AUIPC : effective_format = U_FORMAT;
+		JAL : effective_format = J_FORMAT;
+		default : effective_format = INVALID_FORMAT;
+	endcase
+
+	// determine if the opcode is valid 
+	case (effective_opcode)
+		OP, OP_IMM, LOAD, STORE, LUI, AUIPC, JAL, JALR, BRANCH, SYSTEM, FENCE : opcode_invalid = 0;
+		default : opcode_invalid = 1;
+	endcase
+
+	// determine which registers are being sourced (for forwarding)
+	case (effective_format)
+		R_FORMAT : begin
+			inst_uses_rd = 1;
+			inst_uses_rs1 = 1;
+			inst_uses_rs2 = 1;
+		end
+		I_FORMAT : begin
+			inst_uses_rd = 1;
+			inst_uses_rs1 = 1;
+			inst_uses_rs2 = 0;
+		end
+		S_FORMAT, B_FORMAT : begin
+			inst_uses_rd = 0;
+			inst_uses_rs1 = 1;
+			inst_uses_rs2 = 1;
+		end
+		U_FORMAT, J_FORMAT : begin
+			inst_uses_rd = 1;
+			inst_uses_rs1 = 0;
+			inst_uses_rs2 = 0;
+		end
+		default : begin
+			inst_uses_rd = 0;
+			inst_uses_rs1 = 0;
+			inst_uses_rs2 = 0;
+		end
+	endcase
+end
+
 
 always @(*) begin
 case (effective_opcode)
@@ -167,7 +231,6 @@ case (effective_opcode)
 		size_code = SIZE_INVALID;
 		jumper_code = JUMP_INVALID;
 		add_to_mem_controller_queue = 0;
-		opcode_illegal = 0;
         end
         AUIPC: begin
 		operands[0] = pc;
@@ -179,7 +242,6 @@ case (effective_opcode)
 		size_code = SIZE_INVALD;
 		jumper_code = JUMP_INVALID;
 		add_to_mem_controller_queue = 0;
-		opcode_illegal = 0;
         end
         JAL: begin
 		operands[0] = pc;
@@ -191,7 +253,6 @@ case (effective_opcode)
 		size_code = SIZE_INVALD;
 		jumper_code = JUMPER_UNCOND;
 		add_to_mem_controller_queue = 0;
-		opcode_illegal = 0;
         end
         JALR: begin
 		operands[0] = pc;
@@ -203,7 +264,6 @@ case (effective_opcode)
 		size_code = SIZE_INVALD;
 		jumper_code = JUMP_UNCOND;
 		add_to_mem_controller_queue = 0;
-		opcode_illegal = 0;
         end
         BRANCH: begin 
 		operands[0] = rs1_data;
@@ -215,7 +275,6 @@ case (effective_opcode)
 		size_code = SIZE_INVALD;
 		jumper_code = BRANCH_jumper_code(funct3);
 		add_to_mem_controller_queue = 0;
-		opcode_illegal = 0;
         end
         LOAD: begin
 		operands[0] = rs1_data;
@@ -227,7 +286,6 @@ case (effective_opcode)
 		size_code = LOAD_size_hint(funct3);
 		jumper_code = JUMP_INVALID;
 		add_to_mem_controller_queue = 1;
-		opcode_illegal = 0;
         end
         STORE: begin 
 		operands[0] = rs1_data;
@@ -239,7 +297,6 @@ case (effective_opcode)
 		size_code = STORE_size_hint(funct3);
 		jumper_code = JUMP_INVALID;
 		add_to_mem_controller_queue = 1;
-		opcode_illegal = 0;
         end
         OP_IMM: begin 
 		operands[0] = rs1_data;
@@ -251,7 +308,6 @@ case (effective_opcode)
 		size_code = SIZE_INVALID;
 		jumper_code = JUMP_INVALID;
 		add_to_mem_controller_queue = 0;
-		opcode_illegal = 0;
         end
         OP: begin
 		operands[0] = rs1_data;
@@ -263,7 +319,6 @@ case (effective_opcode)
 		size_code = SIZE_INVALID;
 		jumper_code = JUMP_INVALID;
 		add_to_mem_controller_queue = 0;
-		opcode_illegal = 0;
         end
         FENCE: begin // NO OP since this is a single core CPU
 		operands[0] = 0;
@@ -275,7 +330,6 @@ case (effective_opcode)
 		size_code = SIZE_INVALID;
 		jumper_code = JUMP_INVALID;
 		add_to_mem_controller_queue = 0;
-		opcode_illegal = 0;
         end
         SYSTEM: begin // NO OP since this is an unprivilaged CPU
 		operands[0] = 0;
@@ -287,7 +341,6 @@ case (effective_opcode)
 		size_code = SIZE_INVALID;
 		jumper_code = JUMP_INVALID;
 		add_to_mem_controller_queue = 0;
-		opcode_illegal = 0;
         end
 	default: begin 
 		operands[0] = 0;
@@ -299,7 +352,6 @@ case (effective_opcode)
 		size_code = SIZE_INVALID;
 		jumper_code = JUMP_INVALID;
 		add_to_mem_controller_queue = 0;
-		opcode_illegal = 1;
 	end
     endcase
 end
