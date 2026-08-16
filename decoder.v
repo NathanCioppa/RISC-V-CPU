@@ -56,7 +56,6 @@ module decoder #(
 	output reg [2:0] out_size_code,
 	output reg [$clog(JUMPER_CODES_COUNT)-1:0] out_jumper_code,
 	output out_ready_for_next_inst,
-	output reg out_do_forward,
 	
 	output reg out_add_to_mem_controller_queue
 );
@@ -72,17 +71,16 @@ wire [OPCODE_LEN-1:0] real_opcode, effective_opcode;
 wire hazard_rs1, hazard_rs2, hazard_rd;
 wire R_hazard, I_hazard, S_hazard, U_hazard, J_hazard, B_hazard;
 wire HAZ_data_dep, HAZ_mem, HAZ_bad_branch, HAZ_inst_already_execed;
-wire can_forward, do_forward;
 wire inst_uses_rd, inst_uses_rs1, inst_uses_rs2; 
 wire alu_can_forward, rs1_hold_override, rs2_hold_override;
 wire do_forward_rs1, do_forward_rs2;
 
 wire [$clog(FORMATS_COUNT)-1:0] effective_format;
 
-wire [XLEN-1:0] I_imm, S_imm, U_imm, J_imm, B_imm;
+wire [XLEN-1:0] I_imm, S_imm, U_imm, J_imm, B_imm, imm;
 wire I_shift_arith;
 wire opcode_illegal;
-wire is_mem_instruction;
+wire is_mem_inst;
 
 wire [XLEN-1:0] operands [3:0];
 wire [$clog(XLEN)-1:0] xrs_operands [1:0];
@@ -137,12 +135,11 @@ assign B_hazard = S_hazard;
 assign U_hazard = hazard_rd;
 assign J_hazard = U_hazard;
 
-assign is_mem_instruction = opcode == LOAD || opcode == STORE;
-
 // assign the actual hazards that are in effect based on the real instruction
-assign HAZ_mem = is_mem_instruction && mem_controller_closed;
+assign HAZ_mem = is_mem_inst && mem_controller_closed;
 assign HAZ_bad_branch = jumper_did_branch;
 assign HAZ_inst_invalid = !valid_instruction_in;
+assign HAZ_inst_already_execed = inst_dead;
 always @(*) begin
 	case (real_opcode)
 		OP : HAZ_data_dep = R_hazard;
@@ -157,7 +154,6 @@ end
 
 assign kill_inst = !(HAZ_data_dep || HAZ_mem || HAZ_bad_branch);
 assign out_ready_for_next_inst = kill_inst || inst_dead;
-assign HAZ_inst_already_execed = inst_dead;
 
 // _imm wires are set exactly as described in RISC-V Specifications for clarity
 // (thats why for example I_imm doesnt just have instruction[30:20] after sign extension even though it is equivilent
@@ -171,7 +167,7 @@ assign J_imm = { {(XLEN-20){effective_instruction[31]}}, effective_instruction[1
 assign I_shift_arith = effective_instruction[30];
 
 always @(*) begin
-	// format can be determined off of opcode alone
+	// Determine instruction format so that format specific params can be set.
 	case (effective_opcode)
 		OP : effective_format = R_FORMAT;
 		OP_IMM, LOAD, JALR, FENCE, SYSTEM : effective_format = I_FORMAT;
@@ -188,172 +184,155 @@ always @(*) begin
 		default : opcode_invalid = 1;
 	endcase
 
-	// determine which registers are being sourced (for forwarding)
+	// Determine if the instruction encodes an rd, rs1, or rs2 so that 
+	// effective_rd , effective_rs1, and effective_rs2 can be set accordingly.
 	case (effective_format)
-		R_FORMAT : begin
-			inst_uses_rd = 1;
-			inst_uses_rs1 = 1;
-			inst_uses_rs2 = 1;
+		R_FORMAT : begin inst_uses_rd = 1; inst_uses_rs1 = 1; inst_uses_rs2 = 1; end
+		I_FORMAT : begin inst_uses_rd = 1; inst_uses_rs1 = 1; inst_uses_rs2 = 0; end
+		S_FORMAT, B_FORMAT : begin inst_uses_rd = 0; inst_uses_rs1 = 1; inst_uses_rs2 = 1; end
+		U_FORMAT, J_FORMAT : begin inst_uses_rd = 1; inst_uses_rs1 = 0; inst_uses_rs2 = 0; end
+		default : begin inst_uses_rd = 0; inst_uses_rs1 = 0; inst_uses_rs2 = 0; end
+	endcase
+
+	// Determine which imm value is encoded by the instruction.
+	case (effective_format)
+		I_FORMAT : imm = I_imm;
+		S_FORMAT : imm = S_imm;
+		B_FORMAT : imm = B_imm;
+		U_FORMAT : imm = U_imm;
+		J_FORMAT : imm = J_imm;
+		default : imm = 0;
+	endcase
+
+	// Determine if the instruction is bound for the memory controller. 
+	case (effective_opcode)
+		LOAD, STORE : is_mem_inst = 1;
+		default : is_mem_inst = 0;
+	endcase
+
+	// Determine operands and codes per-opcode.
+	case (effectve_opcode)
+		OP: begin
+			operands[0] = rs1_data;
+			operands[1] = rs2_data;
+			operands[2] = 0;
+			operands[3] = 0;
+			alu_code = OP_alu_code(funct3, funct7);
+			mem_code = MEM_INVALID;
+			size_code = SIZE_INVALID;
+			jumper_code = JUMP_INVALID;
 		end
-		I_FORMAT : begin
-			inst_uses_rd = 1;
-			inst_uses_rs1 = 1;
-			inst_uses_rs2 = 0;
+		OP_IMM: begin
+			operands[0] = rs1_data;
+			operands[1] = (funct3 == 1 || funct3 == 5) ? imm[4:0] : imm;
+			operands[2] = 0;
+			operands[3] = 0;
+			alu_code = OP_IMM_alu_code(funct3, I_shift_arith);
+			mem_code = MEM_INVALID;
+			size_code = SIZE_INVALID;
+			jumper_code = JUMP_INVALID;
 		end
-		S_FORMAT, B_FORMAT : begin
-			inst_uses_rd = 0;
-			inst_uses_rs1 = 1;
-			inst_uses_rs2 = 1;
+		LOAD: begin
+			operands[0] = rs1_data;
+			operands[1] = imm;
+			operands[2] = 0;
+			operands[3] = 0;
+			alu_code = ALU_ADD;
+			mem_code = MEM_LOAD;
+			size_code = LOAD_size_hint(funct3);
+			jumper_code = JUMP_INVALID;
 		end
-		U_FORMAT, J_FORMAT : begin
-			inst_uses_rd = 1;
-			inst_uses_rs1 = 0;
-			inst_uses_rs2 = 0;
+		STORE: begin
+			operands[0] = rs1_data;
+			operands[1] = imm;
+			operands[2] = 0;
+			operands[3] = 0;
+			alu_code = ALU_ADD;
+			mem_code = MEM_STORE;
+			size_code = STORE_size_hint(funct3);
+			jumper_code = JUMP_INVALID;
 		end
-		default : begin
-			inst_uses_rd = 0;
-			inst_uses_rs1 = 0;
-			inst_uses_rs2 = 0;
+		LUI: begin
+			operands[0] = 0;
+			operands[1] = imm;
+			operands[2] = 0;
+			operands[3] = 0;
+			alu_code = ALU_AUI;
+			mem_code = MEM_INVALID;
+			size_code = SIZE_INVALID;
+			jumper_code = JUMP_INVALID;
+		end
+		AUIPC: begin
+			operands[0] = pc;
+			operands[1] = imm;
+			operands[2] = 0;
+			operands[3] = 0;
+			alu_code = ALU_AUI;
+			mem_code = MEM_INVALID;
+			size_code = SIZE_INVALD;
+			jumper_code = JUMP_INVALID;
+		end
+		JAL: begin
+			operands[0] = pc;
+			operands[1] = 4;
+			operands[2] = pc;
+			operands[3] = imm;
+			alu_code = ALU_ADD;
+			mem_code = MEM_INVALID;
+			size_code = SIZE_INVALD;
+			jumper_code = JUMPER_UNCOND;
+		end
+		JALR: begin
+			operands[0] = pc;
+			operands[1] = 4;
+			operands[2] = rs1_data;
+			operands[3] = imm;
+			alu_code = ALU_ADD;
+			mem_code = MEM_INVALID;
+			size_code = SIZE_INVALD;
+			jumper_code = JUMP_UNCOND;
+		end
+		BRANCH: begin
+			operands[0] = rs1_data;
+			operands[1] = rs2_data;
+			operands[2] = pc;
+			operands[3] = imm;
+			alu_code = ALU_INVALID;
+			mem_code = MEM_INVALID;
+			size_code = SIZE_INVALD;
+			jumper_code = BRANCH_jumper_code(funct3);
+		end
+		FENCE: begin // NO-OP since CPU is single-core
+			operands[0] = 0;
+			operands[1] = 0;
+			operands[2] = 0;
+			operands[3] = 0;
+			alu_code = ALU_INVALID;
+			mem_code = MEM_INVALID;
+			size_code = SIZE_INVALID;
+			jumper_code = JUMP_INVALID;
+		end
+		SYSTEM: begin // NO-OP since CPU is unprivilaged
+			operands[0] = 0;
+			operands[1] = 0;
+			operands[2] = 0;
+			operands[3] = 0;
+			alu_code = ALU_INVALID;
+			mem_code = MEM_INVALID;
+			size_code = SIZE_INVALID;
+			jumper_code = JUMP_INVALID;
+		end
+		default: begin // NO-OP
+			operands[0] = 0;
+			operands[1] = 0;
+			operands[2] = 0;
+			operands[3] = 0;
+			alu_code = ALU_INVALID;
+			mem_code = MEM_INVALID;
+			size_code = SIZE_INVALID;
+			jumper_code = JUMP_INVALID;
 		end
 	endcase
-end
-
-
-always @(*) begin
-case (effective_opcode)
-        LUI: begin
-		operands[0] = 0;
-		operands[1] = U_imm;
-		operands[2] = 0;
-		operands[3] = 0;
-		alu_code = ALU_AUI;
-		mem_code = MEM_INVALID;
-		size_code = SIZE_INVALID;
-		jumper_code = JUMP_INVALID;
-		add_to_mem_controller_queue = 0;
-        end
-        AUIPC: begin
-		operands[0] = pc;
-		operands[1] = U_imm;
-		operands[2] = 0;
-		operands[3] = 0;
-		alu_code = ALU_AUI;
-		mem_code = MEM_INVALID;
-		size_code = SIZE_INVALD;
-		jumper_code = JUMP_INVALID;
-		add_to_mem_controller_queue = 0;
-        end
-        JAL: begin
-		operands[0] = pc;
-		operands[1] = 4;
-		operands[2] = pc;
-		operands[3] = J_imm;
-		alu_code = ALU_ADD;
-		mem_code = MEM_INVALID;
-		size_code = SIZE_INVALD;
-		jumper_code = JUMPER_UNCOND;
-		add_to_mem_controller_queue = 0;
-        end
-        JALR: begin
-		operands[0] = pc;
-		operands[1] = 4;
-		operands[2] = rs1_data;
-		operands[3] = I_imm;
-		alu_code = ALU_ADD;
-		mem_code = MEM_INVALID;
-		size_code = SIZE_INVALD;
-		jumper_code = JUMP_UNCOND;
-		add_to_mem_controller_queue = 0;
-        end
-        BRANCH: begin 
-		operands[0] = rs1_data;
-		operands[1] = rs2_data;
-		operands[2] = pc;
-		operands[3] = B_imm;
-		alu_code = ALU_INVALID;
-		mem_code = MEM_INVALID;
-		size_code = SIZE_INVALD;
-		jumper_code = BRANCH_jumper_code(funct3);
-		add_to_mem_controller_queue = 0;
-        end
-        LOAD: begin
-		operands[0] = rs1_data;
-		operands[1] = I_imm;
-		operands[2] = 0;
-		operands[3] = 0;
-		alu_code = ALU_ADD;
-		mem_code = MEM_LOAD;
-		size_code = LOAD_size_hint(funct3);
-		jumper_code = JUMP_INVALID;
-		add_to_mem_controller_queue = 1;
-        end
-        STORE: begin 
-		operands[0] = rs1_data;
-		operands[1] = S_imm;
-		operands[2] = 0;
-		operands[3] = 0;
-		alu_code = ALU_ADD;
-		mem_code = MEM_STORE;
-		size_code = STORE_size_hint(funct3);
-		jumper_code = JUMP_INVALID;
-		add_to_mem_controller_queue = 1;
-        end
-        OP_IMM: begin 
-		operands[0] = rs1_data;
-		operands[1] = (funct3 == 1 || funct3 == 5) ? I_imm[4:0] : I_imm;
-		operands[2] = 0;
-		operands[3] = 0;
-		alu_code = OP_IMM_alu_code(funct3, I_shift_arith);
-		mem_code = MEM_INVALID;
-		size_code = SIZE_INVALID;
-		jumper_code = JUMP_INVALID;
-		add_to_mem_controller_queue = 0;
-        end
-        OP: begin
-		operands[0] = rs1_data;
-		operands[1] = rs2_data;
-		operands[2] = 0;
-		operands[3] = 0;
-		alu_code = OP_alu_code(funct3, funct7);
-		mem_code = MEM_INVALID;
-		size_code = SIZE_INVALID;
-		jumper_code = JUMP_INVALID;
-		add_to_mem_controller_queue = 0;
-        end
-        FENCE: begin // NO OP since this is a single core CPU
-		operands[0] = 0;
-		operands[1] = 0;
-		operands[2] = 0;
-		operands[3] = 0;
-		alu_code = ALU_INVALID;
-		mem_code = MEM_INVALID;
-		size_code = SIZE_INVALID;
-		jumper_code = JUMP_INVALID;
-		add_to_mem_controller_queue = 0;
-        end
-        SYSTEM: begin // NO OP since this is an unprivilaged CPU
-		operands[0] = 0;
-		operands[1] = 0;
-		operands[2] = 0;
-		operands[3] = 0;
-		alu_code = ALU_INVALID;
-		mem_code = MEM_INVALID;
-		size_code = SIZE_INVALID;
-		jumper_code = JUMP_INVALID;
-		add_to_mem_controller_queue = 0;
-        end
-	default: begin 
-		operands[0] = 0;
-		operands[1] = 0;
-		operands[2] = 0;
-		operands[3] = 0;
-		alu_code = ALU_INVALID;
-		mem_code = MEM_INVALID;
-		size_code = SIZE_INVALID;
-		jumper_code = JUMP_INVALID;
-		add_to_mem_controller_queue = 0;
-	end
-    endcase
 end
 
 always @(posedge clk) begin
@@ -381,13 +360,14 @@ always @(posedge clk) begin
 	out_alu_code <= alu_code;
 	out_size_code <= size_hint;
 	out_mem_code <= mem_hint;
-
 	out_jumper_code <= jumper_code;
-		
-	out_add_to_mem_controller_queue <= add_to_mem_controller_queue;
-	
+	out_add_to_mem_controller_queue <= is_mem_inst;
+
+	// UPDATE MEMORY HOLDS	
 	mem_holds[effective_rd] <= 1;
 	
+	// PC-INCREMENT
+	// SET INSTRUCTION LIFE STATE
 	if(out_ready_for_next_inst && next_inst_ready) begin
 		inst_dead <= 0;
 		if(!do_pc_writeback)
@@ -395,11 +375,11 @@ always @(posedge clk) begin
 	end
 	else if(kill_inst)
 		inst_dead <= 1;
-
-	out_do_forward <= do_forward;
 end
 
 
+
+// ######################################
 // ########## HELPER FUNCTIONS ##########
 
 function [$clog(ALU_CODES_COUNT)-1:0] OP_alu_code(input [2:0] funct3, input [6:0] funct7);
